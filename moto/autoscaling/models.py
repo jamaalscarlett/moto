@@ -441,7 +441,7 @@ class FakeAutoScalingGroup(CloudFormationModel):
         mixed_instances_policy: Optional[Dict[str, Any]],
         capacity_rebalance: bool,
         new_instances_protected_from_scale_in: bool = False,
-        created_time: datetime = datetime.now()
+        created_time: datetime = datetime.now(),
     ):
         self.autoscaling_backend = autoscaling_backend
         self.ec2_backend = ec2_backend

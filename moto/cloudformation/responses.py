@@ -154,12 +154,25 @@ class CloudFormationResponse(BaseResponse):
                 return True
         return False
 
+    def validate_template_and_stack_body(self) -> None:
+        if self._get_param("TemplateBody") and self._get_param("UsePreviousTemplate").lower() == "true":
+            raise ValidationError(
+                message="An error occurred (ValidationError) when calling the CreateChangeSet operation: You cannot specify both usePreviousTemplate and Template Body/Template URL."
+            )
+        elif not self._get_param("TemplateBody") and self._get_param("UsePreviousTemplate").lower() == "false":
+            raise ValidationError(
+                message="An error occurred (ValidationError) when calling the CreateChangeSet operation: Either Template URL or Template Body must be specified."
+            )
+
     def create_change_set(self) -> str:
         stack_name = self._get_param("StackName")
         change_set_name = self._get_param("ChangeSetName")
         stack_body = self._get_param("TemplateBody")
+        use_previous_template = self._get_param("UsePreviousTemplate").lower()
         stack = self.cloudformation_backend.get_stack(stack_name)
-        if self._get_param("UsePreviousTemplate") == "true":
+        self.validate_template()
+
+        if use_previous_template == "true":
             stack_body = stack.template
         template_url = self._get_param("TemplateURL")
         description = self._get_param("Description")
