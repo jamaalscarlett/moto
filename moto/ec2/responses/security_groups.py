@@ -86,6 +86,8 @@ class SecurityGroups(EC2BaseResponse):
                 d = d[subkey]
             d[key_splitted[-1]] = value
 
+        sg_rule_tags = self._parse_tag_specification().get("security-group-rule", {})
+
         if "IpPermissions" not in querytree:
             # Handle single rule syntax
             (
@@ -97,16 +99,17 @@ class SecurityGroups(EC2BaseResponse):
                 prefix_list_ids,
             ) = parse_sg_attributes_from_dict(querytree)
 
-            yield (
-                group_name_or_id,
-                ip_protocol,
-                from_port,
-                to_port,
-                ip_ranges,
-                source_groups,
-                prefix_list_ids,
-                security_rule_ids,
-            )
+            yield {
+                "group_name_or_id": group_name_or_id,
+                "ip_protocol": ip_protocol,
+                "from_port": from_port,
+                "to_port": to_port,
+                "ip_ranges": ip_ranges,
+                "sgrule_tags": sg_rule_tags,
+                "source_groups": source_groups,
+                "prefix_list_ids": prefix_list_ids,
+                "security_rule_ids": security_rule_ids,
+            }
 
         ip_permissions = querytree.get("IpPermissions") or {}
         for ip_permission_idx in sorted(ip_permissions.keys()):
@@ -121,22 +124,23 @@ class SecurityGroups(EC2BaseResponse):
                 prefix_list_ids,
             ) = parse_sg_attributes_from_dict(ip_permission)
 
-            yield (
-                group_name_or_id,
-                ip_protocol,
-                from_port,
-                to_port,
-                ip_ranges,
-                source_groups,
-                prefix_list_ids,
-                security_rule_ids,
-            )
+            yield {
+                "group_name_or_id": group_name_or_id,
+                "ip_protocol": ip_protocol,
+                "from_port": from_port,
+                "to_port": to_port,
+                "ip_ranges": ip_ranges,
+                "sgrule_tags": sg_rule_tags,
+                "source_groups": source_groups,
+                "prefix_list_ids": prefix_list_ids,
+                "security_rule_ids": security_rule_ids,
+            }
 
     def authorize_security_group_egress(self) -> str:
         self.error_on_dryrun()
 
-        for args in self._process_rules_from_querystring():
-            rule, group = self.ec2_backend.authorize_security_group_egress(*args)
+        for kwargs in self._process_rules_from_querystring():
+            rule, group = self.ec2_backend.authorize_security_group_egress(**kwargs)
         self.ec2_backend.sg_old_egress_ruls[group.id] = group.egress_rules.copy()
         template = self.response_template(AUTHORIZE_SECURITY_GROUP_EGRESS_RESPONSE)
         return template.render(rule=rule, group=group)
@@ -144,8 +148,8 @@ class SecurityGroups(EC2BaseResponse):
     def authorize_security_group_ingress(self) -> str:
         self.error_on_dryrun()
 
-        for args in self._process_rules_from_querystring():
-            rule, group = self.ec2_backend.authorize_security_group_ingress(*args)
+        for kwargs in self._process_rules_from_querystring():
+            rule, group = self.ec2_backend.authorize_security_group_ingress(**kwargs)
         self.ec2_backend.sg_old_ingress_ruls[group.id] = group.ingress_rules.copy()
         template = self.response_template(AUTHORIZE_SECURITY_GROUP_INGRESS_RESPONSE)
         return template.render(rule=rule, group=group)
@@ -198,11 +202,19 @@ class SecurityGroups(EC2BaseResponse):
 
     def describe_security_group_rules(self) -> str:
         group_id = self._get_param("GroupId")
+        sg_rule_ids = self._get_param("SecurityGroupRuleId.1")
         filters = self._filters_from_querystring()
 
         self.error_on_dryrun()
 
-        rules = self.ec2_backend.describe_security_group_rules(group_id, filters)
+        # if sg rule ids are not None then wrap in a list
+        # as expected by ec2_backend.describe_security_group_rules
+        if sg_rule_ids:
+            sg_rule_ids = [sg_rule_ids]
+
+        rules = self.ec2_backend.describe_security_group_rules(
+            group_id, sg_rule_ids, filters
+        )
         template = self.response_template(DESCRIBE_SECURITY_GROUP_RULES_RESPONSE)
         return template.render(rules=rules)
 
@@ -210,28 +222,36 @@ class SecurityGroups(EC2BaseResponse):
         self.error_on_dryrun()
 
         for args in self._process_rules_from_querystring():
-            self.ec2_backend.revoke_security_group_egress(*args)
+            # we don't need this parameter to revoke
+            del args["sgrule_tags"]
+            self.ec2_backend.revoke_security_group_egress(**args)
         return REVOKE_SECURITY_GROUP_EGRESS_RESPONSE
 
     def revoke_security_group_ingress(self) -> str:
         self.error_on_dryrun()
 
         for args in self._process_rules_from_querystring():
-            self.ec2_backend.revoke_security_group_ingress(*args)
+            # we don't need this parameter to revoke
+            del args["sgrule_tags"]
+            self.ec2_backend.revoke_security_group_ingress(**args)
         return REVOKE_SECURITY_GROUP_INGRESS_RESPONSE
 
     def update_security_group_rule_descriptions_ingress(self) -> str:
         for args in self._process_rules_from_querystring():
+            # we don't need this parameter to revoke
+            del args["sgrule_tags"]
             group = self.ec2_backend.update_security_group_rule_descriptions_ingress(
-                *args
+                **args
             )
         self.ec2_backend.sg_old_ingress_ruls[group.id] = group.ingress_rules.copy()
         return UPDATE_SECURITY_GROUP_RULE_DESCRIPTIONS_INGRESS
 
     def update_security_group_rule_descriptions_egress(self) -> str:
         for args in self._process_rules_from_querystring():
+            # we don't need this parameter to revoke
+            del args["sgrule_tags"]
             group = self.ec2_backend.update_security_group_rule_descriptions_egress(
-                *args
+                **args
             )
         self.ec2_backend.sg_old_egress_ruls[group.id] = group.egress_rules.copy()
         return UPDATE_SECURITY_GROUP_RULE_DESCRIPTIONS_EGRESS
@@ -255,23 +275,24 @@ DESCRIBE_SECURITY_GROUP_RULES_RESPONSE = """
 <DescribeSecurityGroupRulesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
   <requestId>{{ request_id }}</requestId>
   <securityGroupRuleSet>
-    {% for group, rule_list in rules.items() %}
-        {% for rule in rule_list %}
+        {% for rule in rules %}
+          {% for ip_range in rule.ip_ranges %}
             <item>
-                {% if rule.from_port is not none %}
-                <fromPort>{{ rule.from_port }}</fromPort>
-                {% endif %}
-                {% if rule.to_port is not none %}
-                  <toPort>{{ rule.to_port }}</toPort>
-                {% endif %}
-                {% if rule.ip_ranges %}
-                  <cidrIpv4>{{ rule.ip_ranges[0]['CidrIp'] }}</cidrIpv4>
-                {% endif %}
+                <fromPort>{{ rule.from_port if rule.from_port is not none else -1 }}</fromPort>
+                <toPort>{{ rule.to_port if rule.to_port is not none else -1 }}</toPort>
+                {% if ip_range['CidrIp'] %}<cidrIpv4>{{ ip_range['CidrIp'] }}</cidrIpv4>{% endif %}
+                {% if ip_range['CidrIpv6'] %}<cidrIpv6>{{ ip_range['CidrIpv6'] }}</cidrIpv6>{% endif %}
                 <ipProtocol>{{ rule.ip_protocol }}</ipProtocol>
-                <groupId>{{ group }}</groupId>
+                <groupId>{{ rule.group_id }}</groupId>
                 <groupOwnerId>{{ rule.owner_id }}</groupOwnerId>
+                {% if ip_range['Description'] %}<description>{{ ip_range['Description'] }}</description>{% endif %}
                 <isEgress>{{ 'true' if rule.is_egress else 'false' }}</isEgress>
                 <securityGroupRuleId>{{ rule.id }}</securityGroupRuleId>
+                {% if (rule.source_groups | length) > 0 %}
+                <referencedGroupInfo>
+                  <groupId>{{ rule.source_groups[0]['GroupId'] }}</groupId><userId>{{ rule.source_groups[0]['OwnerId'] }}</userId>
+                </referencedGroupInfo>
+                {% endif %}
                 <tagSet>
                 {% for tag in rule.get_tags() %}
                     <item>
@@ -281,8 +302,33 @@ DESCRIBE_SECURITY_GROUP_RULES_RESPONSE = """
                 {% endfor %}
                 </tagSet> 
             </item>
+          {% endfor %}
+          {% if rule.ip_ranges | length == 0 %}
+            <item>
+                <fromPort>{{ rule.from_port if rule.from_port is not none else -1 }}</fromPort>
+                <toPort>{{ rule.to_port if rule.to_port is not none else -1 }}</toPort>
+                <ipProtocol>{{ rule.ip_protocol }}</ipProtocol>
+                {% if rule.prefix_list_ids | length > 0 %}<prefixListId>{{ rule.prefix_list_ids[0]['PrefixListId'] }}</prefixListId>{% endif %}
+                <groupId>{{ rule.group_id }}</groupId>
+                <groupOwnerId>{{ rule.owner_id }}</groupOwnerId>
+                <isEgress>{{ 'true' if rule.is_egress else 'false' }}</isEgress>
+                <securityGroupRuleId>{{ rule.id }}</securityGroupRuleId>
+                {% if (rule.source_groups | length) > 0 %}
+                <referencedGroupInfo>
+                  <groupId>{{ rule.source_groups[0]['GroupId'] }}</groupId><userId>{{ rule.source_groups[0]['OwnerId'] }}</userId>
+                </referencedGroupInfo>
+                {% endif %}
+                <tagSet>
+                {% for tag in rule.get_tags() %}
+                    <item>
+                      <key>{{ tag.key }}</key>
+                      <value>{{ tag.value }}</value>
+                    </item>
+                {% endfor %}
+                </tagSet> 
+            </item>
+          {% endif %}
         {% endfor %}
-    {% endfor %}
   </securityGroupRuleSet>
 </DescribeSecurityGroupRulesResponse>"""
 
@@ -304,7 +350,7 @@ DESCRIBE_SECURITY_GROUPS_RESPONSE = """<DescribeSecurityGroupsResponse xmlns="ht
              <vpcId>{{ group.vpc_id }}</vpcId>
              {% endif %}
              <ipPermissions>
-               {% for rule in group.ingress_rules %}
+               {% for rule in group.flattened_ingress_rules %}
                     <item>
                        <ipProtocol>{{ rule.ip_protocol }}</ipProtocol>
                        {% if rule.from_port is not none %}
@@ -369,7 +415,7 @@ DESCRIBE_SECURITY_GROUPS_RESPONSE = """<DescribeSecurityGroupsResponse xmlns="ht
                 {% endfor %}
              </ipPermissions>
              <ipPermissionsEgress>
-               {% for rule in group.egress_rules %}
+               {% for rule in group.flattened_egress_rules %}
                     <item>
                        <ipProtocol>{{ rule.ip_protocol }}</ipProtocol>
                        {% if rule.from_port is not none %}
@@ -470,6 +516,14 @@ AUTHORIZE_SECURITY_GROUP_INGRESS_RESPONSE = """<AuthorizeSecurityGroupIngressRes
             {% if rule.to_port is not none %}
             <toPort>{{ rule.to_port }}</toPort>
             {% endif %}
+            <tagSet>
+                {% for tag in rule.get_tags() %}
+                    <item>
+                      <key>{{ tag.key }}</key>
+                      <value>{{ tag.value }}</value>
+                    </item>
+                {% endfor %}
+            </tagSet> 
         </item>
     {% endfor %}
     {% for item in rule.prefix_list_ids %}
@@ -550,6 +604,14 @@ AUTHORIZE_SECURITY_GROUP_EGRESS_RESPONSE = """<AuthorizeSecurityGroupEgressRespo
             {% if rule.to_port is not none %}
             <toPort>{{ rule.to_port }}</toPort>
             {% endif %}
+            <tagSet>
+                {% for tag in rule.get_tags() %}
+                    <item>
+                      <key>{{ tag.key }}</key>
+                      <value>{{ tag.value }}</value>
+                    </item>
+                {% endfor %}
+            </tagSet> 
         </item>
     {% endfor %}
     {% for item in rule.prefix_list_ids %}

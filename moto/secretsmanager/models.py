@@ -28,6 +28,8 @@ from .list_secrets.filters import (
 )
 from .utils import get_secret_name_from_partial_arn, random_password, secret_arn
 
+MAX_RESULTS_DEFAULT = 100
+
 
 def filter_primary_region(secret: "FakeSecret", values: List[str]) -> bool:
     if isinstance(secret, FakeSecret):
@@ -98,7 +100,7 @@ class FakeSecret:
         self.secret_string = secret_string
         self.secret_binary = secret_binary
         self.description = description
-        self.tags = tags or []
+        self.tags = tags or None
         self.kms_key_id = kms_key_id
         self.version_stages = version_stages
         self.last_changed_date = last_changed_date
@@ -158,7 +160,7 @@ class FakeSecret:
         last_changed_date: Optional[int] = None,
     ) -> None:
         self.description = description
-        self.tags = tags or []
+        self.tags = tags or None
         if last_changed_date is not None:
             self.last_changed_date = last_changed_date
 
@@ -236,7 +238,7 @@ class FakeSecret:
             "DeletedDate": self.deleted_date,
             "CreatedDate": self.created_date,
         }
-        if self.tags:
+        if self.tags is not None:
             dct["Tags"] = self.tags
         if self.description:
             dct["Description"] = self.description
@@ -361,15 +363,6 @@ class SecretsManagerBackend(BaseBackend):
         super().__init__(region_name, account_id)
         self.secrets = SecretsStore()
 
-    @staticmethod
-    def default_vpc_endpoint_service(
-        service_region: str, zones: List[str]
-    ) -> List[Dict[str, str]]:
-        """Default VPC endpoint services."""
-        return BaseBackend.default_vpc_endpoint_service_factory(
-            service_region, zones, "secretsmanager"
-        )
-
     def _is_valid_identifier(self, identifier: str) -> bool:
         return identifier in self.secrets
 
@@ -479,6 +472,53 @@ class SecretsManagerBackend(BaseBackend):
 
         return response_data
 
+    def batch_get_secret_value(
+        self,
+        secret_id_list: Optional[List[str]] = None,
+        filters: Optional[List[Dict[str, Any]]] = None,
+        max_results: Optional[int] = None,
+        next_token: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], List[Any], Optional[str]]:
+        secret_list = []
+        errors: List[Any] = []
+        if secret_id_list and filters:
+            raise InvalidParameterException(
+                "Either 'SecretIdList' or 'Filters' must be provided, but not both."
+            )
+
+        if max_results and not filters:
+            raise InvalidParameterException(
+                "'Filters' not specified. 'Filters' must also be specified when 'MaxResults' is provided."
+            )
+
+        if secret_id_list:
+            for secret_id in secret_id_list:
+                # TODO perhaps there should be a check if the secret id is valid identifier
+                # and add an error to the list if not
+                try:
+                    # TODO investigate the behaviour when the secret doesn't exist or has been deleted,
+                    # might need to add an error to the list
+                    secret_list.append(self.get_secret_value(secret_id, "", ""))
+                except (SecretNotFoundException, InvalidRequestException):
+                    pass
+
+        if filters:
+            for secret in self.secrets.values():
+                if _matches(secret, filters):
+                    if isinstance(secret, FakeSecret):
+                        secret_list.append(
+                            self.get_secret_value(secret.secret_id, "", "")
+                        )
+                    elif isinstance(secret, ReplicaSecret):
+                        secret_list.append(
+                            self.get_secret_value(secret.source.secret_id, "", "")
+                        )
+
+        secret_page, new_next_token = self._get_secret_values_page_and_next_token(
+            secret_list, max_results, next_token
+        )
+        return secret_page, errors, new_next_token
+
     def update_secret(
         self,
         secret_id: str,
@@ -488,7 +528,6 @@ class SecretsManagerBackend(BaseBackend):
         kms_key_id: Optional[str] = None,
         description: Optional[str] = None,
     ) -> str:
-
         # error if secret does not exist
         if secret_id not in self.secrets:
             raise SecretNotFoundException()
@@ -562,7 +601,6 @@ class SecretsManagerBackend(BaseBackend):
         replica_regions: Optional[List[Dict[str, str]]] = None,
         force_overwrite: bool = False,
     ) -> Tuple[FakeSecret, bool]:
-
         if version_stages is None:
             version_stages = ["AWSCURRENT"]
 
@@ -624,7 +662,6 @@ class SecretsManagerBackend(BaseBackend):
         client_request_token: str,
         version_stages: List[str],
     ) -> str:
-
         if not self._is_valid_identifier(secret_id):
             raise SecretNotFoundException()
         else:
@@ -862,28 +899,24 @@ class SecretsManagerBackend(BaseBackend):
     def list_secrets(
         self,
         filters: List[Dict[str, Any]],
-        max_results: int = 100,
+        max_results: int = MAX_RESULTS_DEFAULT,
         next_token: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        secret_list = []
+        secret_list: List[Dict[str, Any]] = []
         for secret in self.secrets.values():
             if _matches(secret, filters):
                 secret_list.append(secret.to_dict())
 
-        starting_point = int(next_token or 0)
-        ending_point = starting_point + int(max_results or 100)
-        secret_page = secret_list[starting_point:ending_point]
-        new_next_token = str(ending_point) if ending_point < len(secret_list) else None
-
-        return secret_page, new_next_token
+        return self._get_secret_values_page_and_next_token(
+            secret_list, max_results, next_token
+        )
 
     def delete_secret(
         self,
         secret_id: str,
-        recovery_window_in_days: int,
+        recovery_window_in_days: Optional[int],
         force_delete_without_recovery: bool,
     ) -> Tuple[str, str, float]:
-
         if recovery_window_in_days is not None and (
             recovery_window_in_days < 7 or recovery_window_in_days > 30
         ):
@@ -915,7 +948,7 @@ class SecretsManagerBackend(BaseBackend):
                 msg = f"You can't delete secret {secret_id} that still has replica regions [{replica_regions}]"
                 raise InvalidParameterException(msg)
 
-            if secret.is_deleted():
+            if secret.is_deleted() and not force_delete_without_recovery:
                 raise InvalidRequestException(
                     "An error occurred (InvalidRequestException) when calling the DeleteSecret operation: You tried to \
                     perform the operation on a secret that's currently marked deleted."
@@ -938,7 +971,6 @@ class SecretsManagerBackend(BaseBackend):
             return arn, name, self._unix_time_secs(deletion_date)
 
     def restore_secret(self, secret_id: str) -> Tuple[str, str]:
-
         if not self._is_valid_identifier(secret_id):
             raise SecretNotFoundException()
 
@@ -950,41 +982,32 @@ class SecretsManagerBackend(BaseBackend):
         return secret.arn, secret.name
 
     def tag_resource(self, secret_id: str, tags: List[Dict[str, str]]) -> None:
-
         if secret_id not in self.secrets:
             raise SecretNotFoundException()
 
         secret = self.secrets[secret_id]
         if isinstance(secret, ReplicaSecret):
             raise OperationNotPermittedOnReplica
-        old_tags = secret.tags
+
+        old_tags = {tag["Key"]: tag for tag in secret.tags or []}
 
         for tag in tags:
-            existing_key_name = next(
-                (
-                    old_key
-                    for old_key in old_tags
-                    if old_key.get("Key") == tag.get("Key")
-                ),
-                None,
-            )
-            if existing_key_name:
-                old_tags.remove(existing_key_name)
-            old_tags.append(tag)
+            old_tags[tag["Key"]] = tag
+
+        secret.tags = list(old_tags.values())
 
     def untag_resource(self, secret_id: str, tag_keys: List[str]) -> None:
-
         if secret_id not in self.secrets:
             raise SecretNotFoundException()
 
         secret = self.secrets[secret_id]
         if isinstance(secret, ReplicaSecret):
             raise OperationNotPermittedOnReplica
-        tags = secret.tags
 
-        for tag in tags:
-            if tag["Key"] in tag_keys:
-                tags.remove(tag)
+        if secret.tags is None:
+            return
+
+        secret.tags = [tag for tag in secret.tags if tag["Key"] not in tag_keys]
 
     def update_secret_version_stage(
         self,
@@ -1011,6 +1034,14 @@ class SecretsManagerBackend(BaseBackend):
                 )
 
             stages.remove(version_stage)
+        elif version_stage == "AWSCURRENT":
+            current_version = [
+                v
+                for v in secret.versions
+                if "AWSCURRENT" in secret.versions[v]["version_stages"]
+            ][0]
+            err = f"The parameter RemoveFromVersionId can't be empty. Staging label AWSCURRENT is currently attached to version {current_version}, so you must explicitly reference that version in RemoveFromVersionId."
+            raise InvalidParameterException(err)
 
         if move_to_version_id:
             if move_to_version_id not in secret.versions:
@@ -1026,6 +1057,9 @@ class SecretsManagerBackend(BaseBackend):
                 # Whenever you move AWSCURRENT, Secrets Manager automatically
                 # moves the label AWSPREVIOUS to the version that AWSCURRENT
                 # was removed from.
+                for version in secret.versions:
+                    if "AWSPREVIOUS" in secret.versions[version]["version_stages"]:
+                        secret.versions[version]["version_stages"].remove("AWSPREVIOUS")
                 secret.versions[remove_from_version_id]["version_stages"].append(
                     "AWSPREVIOUS"
                 )
@@ -1105,6 +1139,19 @@ class SecretsManagerBackend(BaseBackend):
 
         statuses = [replica.config for replica in secret.replicas]
         return secret_id, statuses
+
+    def _get_secret_values_page_and_next_token(
+        self,
+        secret_list: List[Dict[str, Any]],
+        max_results: Optional[int],
+        next_token: Optional[str],
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        starting_point = int(next_token or 0)
+        ending_point = starting_point + int(max_results or MAX_RESULTS_DEFAULT)
+        secret_page = secret_list[starting_point:ending_point]
+        new_next_token = str(ending_point) if ending_point < len(secret_list) else None
+
+        return secret_page, new_next_token
 
 
 secretsmanager_backends = BackendDict(SecretsManagerBackend, "secretsmanager")

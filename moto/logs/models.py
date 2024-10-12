@@ -17,6 +17,7 @@ from moto.moto_api._internal import mock_random
 from moto.s3.models import MissingBucket, s3_backends
 from moto.utilities.paginator import paginate
 from moto.utilities.tagging_service import TaggingService
+from moto.utilities.utils import get_partition
 
 from .utils import PAGINATION_MODEL, EventMessageFilter
 
@@ -34,7 +35,7 @@ class Destination(BaseModel):
         access_policy: Optional[str] = None,
     ):
         self.access_policy = access_policy
-        self.arn = f"arn:aws:logs:{region}:{account_id}:destination:{destination_name}"
+        self.arn = f"arn:{get_partition(region)}:logs:{region}:{account_id}:destination:{destination_name}"
         self.creation_time = int(unix_time_millis())
         self.destination_name = destination_name
         self.role_arn = role_arn
@@ -126,7 +127,7 @@ class LogStream(BaseModel):
         self.account_id = log_group.account_id
         self.region = log_group.region
         self.log_group = log_group
-        self.arn = f"arn:aws:logs:{self.region}:{self.account_id}:log-group:{log_group.name}:log-stream:{name}"
+        self.arn = f"arn:{get_partition(self.region)}:logs:{self.region}:{self.account_id}:log-group:{log_group.name}:log-stream:{name}"
         self.creation_time = int(unix_time_millis())
         self.first_event_timestamp = None
         self.last_event_timestamp = None
@@ -183,7 +184,6 @@ class LogStream(BaseModel):
         self.upload_sequence_token += 1
 
         for subscription_filter in self.log_group.subscription_filters.values():
-
             service = subscription_filter.destination_arn.split(":")[2]
             formatted_log_events = [
                 {
@@ -208,7 +208,6 @@ class LogStream(BaseModel):
         filter_name: str,
         log_events: List[Dict[str, Any]],
     ) -> None:
-
         if service == "lambda":
             from moto.awslambda.utils import get_backend
 
@@ -382,7 +381,9 @@ class LogGroup(CloudFormationModel):
         self.name = name
         self.account_id = account_id
         self.region = region
-        self.arn = f"arn:aws:logs:{region}:{account_id}:log-group:{name}"
+        self.arn = (
+            f"arn:{get_partition(region)}:logs:{region}:{account_id}:log-group:{name}"
+        )
         self.creation_time = int(unix_time_millis())
         self.streams: Dict[str, LogStream] = dict()  # {name: LogStream}
         # AWS defaults to Never Expire for log group retention
@@ -420,11 +421,13 @@ class LogGroup(CloudFormationModel):
             resource_name, tags, **properties
         )
 
+    def delete(self, account_id: str, region_name: str) -> None:
+        backend = logs_backends[account_id][region_name]
+        backend.delete_log_group(self.name)
+
     @classmethod
     def has_cfn_attr(cls, attr: str) -> bool:
-        return attr in [
-            "Arn",
-        ]
+        return attr in ["Arn"]
 
     def get_cfn_attribute(self, attribute_name: str) -> str:
         from moto.cloudformation.exceptions import UnformattedGetAttTemplateException
@@ -765,15 +768,6 @@ class LogsBackend(BaseBackend):
         self.destinations: Dict[str, Destination] = dict()
         self.tagger = TaggingService()
         self.export_tasks: Dict[str, ExportTask] = dict()
-
-    @staticmethod
-    def default_vpc_endpoint_service(
-        service_region: str, zones: List[str]
-    ) -> List[Dict[str, str]]:
-        """Default VPC endpoint service."""
-        return BaseBackend.default_vpc_endpoint_service_factory(
-            service_region, zones, "logs"
-        )
 
     def create_log_group(
         self, log_group_name: str, tags: Dict[str, str], **kwargs: Any
@@ -1208,7 +1202,6 @@ class LogsBackend(BaseBackend):
         end_time: int,
         query_string: str,
     ) -> str:
-
         for log_group_name in log_group_names:
             if log_group_name not in self.groups:
                 raise ResourceNotFoundException()
@@ -1240,6 +1233,16 @@ class LogsBackend(BaseBackend):
         """
         return self.queries[query_id]
 
+    def cancel_export_task(self, task_id: str) -> None:
+        task = self.export_tasks.get(task_id)
+        if not task:
+            raise ResourceNotFoundException("The specified export task does not exist.")
+        # If the task has already finished, AWS throws an InvalidOperationException
+        #     'The specified export task has already finished'
+        # However, the export task is currently syncronous, meaning it finishes immediately
+        # When we make the Task async, we can also implement the error behaviour
+        task.status = {"code": "CANCELLED", "message": "Cancelled by user"}
+
     def create_export_task(
         self,
         taskName: str,
@@ -1250,7 +1253,7 @@ class LogsBackend(BaseBackend):
         to: int,
     ) -> str:
         try:
-            s3_backends[self.account_id]["global"].get_bucket(destination)
+            s3_backends[self.account_id][self.partition].get_bucket(destination)
         except MissingBucket:
             raise InvalidParameterException(
                 "The given bucket does not exist. Please make sure the bucket is valid."
@@ -1268,13 +1271,13 @@ class LogsBackend(BaseBackend):
             to,
         )
 
-        s3_backends[self.account_id]["global"].put_object(
+        s3_backends[self.account_id][self.partition].put_object(
             bucket_name=destination,
             key_name="aws-logs-write-test",
             value=b"Permission Check Successful",
         )
 
-        if fromTime <= unix_time_millis(datetime.now()) <= to:
+        if fromTime <= to:
             for stream_name in self.groups[logGroupName].streams.keys():
                 logs, _, _ = self.filter_log_events(
                     log_group_name=logGroupName,
@@ -1294,7 +1297,7 @@ class LogsBackend(BaseBackend):
                 )
                 folder = str(mock_random.uuid4()) + "/" + stream_name.replace("/", "-")
                 key_name = f"{destinationPrefix}/{folder}/000000.gz"
-                s3_backends[self.account_id]["global"].put_object(
+                s3_backends[self.account_id][self.partition].put_object(
                     bucket_name=destination,
                     key_name=key_name,
                     value=gzip_compress(raw_logs.encode("utf-8")),

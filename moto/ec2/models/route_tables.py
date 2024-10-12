@@ -116,6 +116,18 @@ class RouteTable(TaggedEC2Resource, CloudFormationModel):
                 for route in self.routes.values()
                 if route.vpc_pcx is not None
             ]
+        elif filter_name == "route.nat-gateway-id":
+            return [
+                route.nat_gateway.id
+                for route in self.routes.values()
+                if route.nat_gateway is not None
+            ]
+        elif filter_name == "route.transit-gateway-id":
+            return [
+                route.transit_gateway.id
+                for route in self.routes.values()
+                if route.transit_gateway is not None
+            ]
         else:
             return super().get_filter_value(filter_name, "DescribeRouteTables")
 
@@ -488,7 +500,9 @@ class RouteBackend:
             )
 
         route.instance = self.get_instance(instance_id) if instance_id else None  # type: ignore[attr-defined]
-        route.interface = self.get_network_interface(interface_id) if interface_id else None  # type: ignore[attr-defined]
+        route.interface = (
+            self.get_network_interface(interface_id) if interface_id else None  # type: ignore[attr-defined]
+        )
         route.vpc_pcx = (
             self.get_vpc_peering_connection(vpc_peering_connection_id)  # type: ignore[attr-defined]
             if vpc_peering_connection_id

@@ -10,9 +10,9 @@ from moto.emr.exceptions import (
     ResourceNotFoundException,
     ValidationException,
 )
+from moto.utilities.utils import CamelToUnderscoresWalker, get_partition
 
 from .utils import (
-    CamelToUnderscoresWalker,
     EmrSecurityGroupManager,
     random_cluster_id,
     random_instance_group_id,
@@ -53,7 +53,7 @@ class FakeInstance(BaseModel):
         self.instance_fleet_id = instance_fleet_id
 
 
-class FakeInstanceGroup(BaseModel):
+class FakeInstanceGroup(CloudFormationModel):
     def __init__(
         self,
         cluster_id: str,
@@ -82,7 +82,7 @@ class FakeInstanceGroup(BaseModel):
         self.name = name
         self.num_instances = instance_count
         self.role = instance_role
-        self.type = instance_type
+        self.instance_type = instance_type
         self.ebs_configuration = ebs_configuration
         self.auto_scaling_policy = auto_scaling_policy
         self.creation_datetime = datetime.now(timezone.utc)
@@ -121,6 +121,44 @@ class FakeInstanceGroup(BaseModel):
                             and dimension["value"] == "${emr.clusterId}"
                         ):
                             dimension["value"] = self.cluster_id
+
+    @property
+    def physical_resource_id(self) -> str:
+        return self.id
+
+    @staticmethod
+    def cloudformation_type() -> str:
+        return "AWS::EMR::InstanceGroupConfig"
+
+    @classmethod
+    def create_from_cloudformation_json(  # type: ignore[misc]
+        cls,
+        resource_name: str,
+        cloudformation_json: Any,
+        account_id: str,
+        region_name: str,
+        **kwargs: Any,
+    ) -> "FakeInstanceGroup":
+        properties = cloudformation_json["Properties"]
+        job_flow_id = properties["JobFlowId"]
+        ebs_config = properties.get("EbsConfiguration")
+        if ebs_config:
+            ebs_config = CamelToUnderscoresWalker.parse_dict(ebs_config)
+        props = {
+            "instance_count": properties.get("InstanceCount"),
+            "instance_role": properties.get("InstanceRole"),
+            "instance_type": properties.get("InstanceType"),
+            "market": properties.get("Market"),
+            "bid_price": properties.get("BidPrice"),
+            "name": properties.get("Name"),
+            "auto_scaling_policy": properties.get("AutoScalingPolicy"),
+            "ebs_configuration": ebs_config,
+        }
+
+        emr_backend: ElasticMapReduceBackend = emr_backends[account_id][region_name]
+        return emr_backend.add_instance_groups(
+            cluster_id=job_flow_id, instance_groups=[props]
+        )[0]
 
 
 class FakeStep(BaseModel):
@@ -284,7 +322,7 @@ class FakeCluster(CloudFormationModel):
 
     @property
     def arn(self) -> str:
-        return f"arn:aws:elasticmapreduce:{self.emr_backend.region_name}:{self.emr_backend.account_id}:cluster/{self.id}"
+        return f"arn:{get_partition(self.emr_backend.region_name)}:elasticmapreduce:{self.emr_backend.region_name}:{self.emr_backend.account_id}:cluster/{self.id}"
 
     @property
     def instance_groups(self) -> List[FakeInstanceGroup]:
@@ -292,11 +330,15 @@ class FakeCluster(CloudFormationModel):
 
     @property
     def master_instance_type(self) -> str:
-        return self.emr_backend.instance_groups[self.master_instance_group_id].type  # type: ignore
+        return self.emr_backend.instance_groups[
+            self.master_instance_group_id  # type: ignore
+        ].instance_type
 
     @property
     def slave_instance_type(self) -> str:
-        return self.emr_backend.instance_groups[self.core_instance_group_id].type  # type: ignore
+        return self.emr_backend.instance_groups[
+            self.core_instance_group_id  # type: ignore
+        ].instance_type
 
     @property
     def instance_count(self) -> int:
@@ -412,7 +454,6 @@ class FakeCluster(CloudFormationModel):
         region_name: str,
         **kwargs: Any,
     ) -> "FakeCluster":
-
         properties = cloudformation_json["Properties"]
 
         instance_attrs = properties.get("Instances", {})
@@ -449,12 +490,63 @@ class FakeCluster(CloudFormationModel):
         cluster.add_tags(tags)
         return cluster
 
+    @classmethod
+    def delete_from_cloudformation_json(  # type: ignore[misc]
+        cls,
+        resource_name: str,
+        cloudformation_json: Dict[str, Any],
+        account_id: str,
+        region_name: str,
+    ) -> None:
+        emr_backend: ElasticMapReduceBackend = emr_backends[account_id][region_name]
 
-class FakeSecurityConfiguration(BaseModel):
+        emr_backend.terminate_job_flows([resource_name])
+
+
+class FakeSecurityConfiguration(CloudFormationModel):
     def __init__(self, name: str, security_configuration: str):
         self.name = name
         self.security_configuration = security_configuration
         self.creation_date_time = datetime.now(timezone.utc)
+
+    @property
+    def physical_resource_id(self) -> str:
+        return self.name
+
+    @staticmethod
+    def cloudformation_type() -> str:
+        return "AWS::EMR::SecurityConfiguration"
+
+    @classmethod
+    def create_from_cloudformation_json(  # type: ignore[misc]
+        cls,
+        resource_name: str,
+        cloudformation_json: Any,
+        account_id: str,
+        region_name: str,
+        **kwargs: Any,
+    ) -> "FakeSecurityConfiguration":
+        emr_backend: ElasticMapReduceBackend = emr_backends[account_id][region_name]
+
+        properties = cloudformation_json["Properties"]
+        return emr_backend.create_security_configuration(
+            name=properties.get("Name") or resource_name,
+            security_configuration=properties.get("SecurityConfiguration", {}),
+        )
+
+    @classmethod
+    def delete_from_cloudformation_json(  # type: ignore[misc]
+        cls,
+        resource_name: str,
+        cloudformation_json: Dict[str, Any],
+        account_id: str,
+        region_name: str,
+    ) -> None:
+        emr_backend: ElasticMapReduceBackend = emr_backends[account_id][region_name]
+
+        properties = cloudformation_json["Properties"]
+        name = properties.get("Name") or resource_name
+        emr_backend.delete_security_configuration(name)
 
 
 class ElasticMapReduceBackend(BaseBackend):
@@ -463,15 +555,7 @@ class ElasticMapReduceBackend(BaseBackend):
         self.clusters: Dict[str, FakeCluster] = {}
         self.instance_groups: Dict[str, FakeInstanceGroup] = {}
         self.security_configurations: Dict[str, FakeSecurityConfiguration] = {}
-
-    @staticmethod
-    def default_vpc_endpoint_service(
-        service_region: str, zones: List[str]
-    ) -> List[Dict[str, str]]:
-        """Default VPC endpoint service."""
-        return BaseBackend.default_vpc_endpoint_service_factory(
-            service_region, zones, "elasticmapreduce"
-        )
+        self.block_public_access_configuration: Dict[str, Any] = {}
 
     @property
     def ec2_backend(self) -> Any:  # type: ignore[misc]
@@ -800,6 +884,40 @@ class ElasticMapReduceBackend(BaseBackend):
                 message=f"Security configuration with name '{name}' does not exist."
             )
         del self.security_configurations[name]
+
+    def get_block_public_access_configuration(
+        self,
+    ) -> Dict[str, Any]:  # type ignore[misc]
+        return self.block_public_access_configuration
+
+    def put_block_public_access_configuration(
+        self,
+        block_public_security_group_rules: bool,
+        rule_ranges: Optional[List[Dict[str, int]]],
+    ) -> None:
+        from moto.sts import sts_backends
+
+        sts_backend = sts_backends[self.account_id]["global"]
+        _, user_arn, _ = sts_backend.get_caller_identity(
+            self.account_id, region=self.region_name
+        )
+        self.block_public_access_configuration = {
+            "block_public_access_configuration": {
+                "block_public_security_group_rules": block_public_security_group_rules,
+                "permitted_public_security_group_rule_ranges": [
+                    {
+                        "min_range": rule_range.get("MinRange"),
+                        "max_range": rule_range.get("MaxRange"),
+                    }
+                    for rule_range in rule_ranges or []
+                ],
+            },
+            "block_public_access_configuration_metadata": {
+                "creation_date_time": datetime.now(),
+                "created_by_arn": user_arn,
+            },
+        }
+        return
 
 
 emr_backends = BackendDict(ElasticMapReduceBackend, "emr")

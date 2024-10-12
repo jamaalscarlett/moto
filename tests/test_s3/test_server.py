@@ -52,7 +52,7 @@ def test_s3_server_bucket_create(key_name):
     assert res.status_code == 200
     assert "ETag" in dict(res.headers)
 
-    # ListBuckets
+    # ListObjects
     res = test_client.get(
         "/", "http://foobaz.localhost:5000/", query_string={"prefix": key_name}
     )
@@ -60,6 +60,29 @@ def test_s3_server_bucket_create(key_name):
     content = xmltodict.parse(res.data)["ListBucketResult"]["Contents"]
     # If we receive a dict, we only received one result
     # If content is of type list, our call returned multiple results - which is not correct
+    assert isinstance(content, dict)
+    assert content["Key"] == key_name
+
+    # ListObjects V2
+    res = test_client.get(
+        "/",
+        "http://foobaz.localhost:5000/",
+        query_string={"prefix": key_name, "list-type": "2"},
+    )
+    assert res.status_code == 200
+    content = xmltodict.parse(res.data)["ListBucketResult"]["Contents"]
+    assert isinstance(content, dict)
+    assert content["Key"] == key_name
+
+    # ListObjectsVersions
+    res = test_client.get(
+        "/",
+        "http://foobaz.localhost:5000/",
+        query_string={"prefix": key_name, "versions": ""},
+    )
+    assert res.status_code == 200
+    assert xmltodict.parse(res.data)["ListVersionsResult"]["Prefix"] == key_name
+    content = xmltodict.parse(res.data)["ListVersionsResult"]["Version"]
     assert isinstance(content, dict)
     assert content["Key"] == key_name
 
@@ -192,7 +215,10 @@ def test_s3_server_post_unicode_bucket_key():
     """Verify non-ascii characters in request URLs (e.g., S3 object names)."""
     dispatcher = server.DomainDispatcherApplication(server.create_backend_app)
     backend_app = dispatcher.get_application(
-        {"HTTP_HOST": "s3.amazonaws.com", "PATH_INFO": "/test-bucket/test-object-てすと"}
+        {
+            "HTTP_HOST": "s3.amazonaws.com",
+            "PATH_INFO": "/test-bucket/test-object-てすと",
+        }
     )
     assert backend_app
     backend_app = dispatcher.get_application(

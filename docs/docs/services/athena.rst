@@ -30,7 +30,7 @@ athena
 - [ ] delete_named_query
 - [ ] delete_notebook
 - [ ] delete_prepared_statement
-- [ ] delete_work_group
+- [X] delete_work_group
 - [ ] export_notebook
 - [ ] get_calculation_execution
 - [ ] get_calculation_execution_code
@@ -78,7 +78,7 @@ athena
                 ],
             }
             resp = requests.post(
-                "http://motoapi.amazonaws.com:5000/moto-api/static/athena/query-results",
+                "http://motoapi.amazonaws.com/moto-api/static/athena/query-results",
                 json=expected_results,
             )
             assert resp.status_code == 201
@@ -87,6 +87,8 @@ athena
             details = client.get_query_execution(QueryExecutionId="any_id")["QueryExecution"]
 
         .. note:: The exact QueryExecutionId is not relevant here, but will likely be whatever value is returned by start_query_execution
+
+        Query results will also be stored in the S3 output location (in CSV format).
 
         
 

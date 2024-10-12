@@ -145,6 +145,10 @@ class Ami(TaggedEC2Resource):
             return self.owner_id
         elif filter_name == "owner-alias":
             return self.owner_alias
+        elif filter_name == "product-code":
+            return self.product_codes
+        elif filter_name == "product-code.type":
+            return "marketplace"  # devpay is not (yet?) supported
         else:
             return super().get_filter_value(filter_name, "DescribeImages")
 
@@ -172,7 +176,8 @@ class AmiBackend:
                     latest_amis = cast(
                         List[Dict[str, Any]],
                         load_resource(
-                            __name__, f"../resources/{path}/{self.region_name}.json"  # type: ignore[attr-defined]
+                            __name__,
+                            f"../resources/{path}/{self.region_name}.json",  # type: ignore[attr-defined]
                         ),
                     )
                     for ami in latest_amis:
@@ -271,10 +276,19 @@ class AmiBackend:
             if exec_users:
                 tmp_images = []
                 for ami in images:
-                    for user_id in exec_users:
-                        for lp in ami.launch_permissions:
-                            if lp.get("UserId") == user_id:
-                                tmp_images.append(ami)
+                    if ami.is_public:
+                        tmp_images.append(ami)
+                    else:
+                        # support filtering by ExecutableUsers=['self']
+                        if "self" in exec_users:
+                            exec_users = list(set(exec_users))
+                            exec_users.remove("self")
+                            exec_users.append(self.account_id)  # type: ignore[attr-defined]
+
+                        for user_id in exec_users:
+                            for lp in ami.launch_permissions:
+                                if lp.get("UserId") == user_id:
+                                    tmp_images.append(ami)
                 images = tmp_images
 
             # Limit by owner ids

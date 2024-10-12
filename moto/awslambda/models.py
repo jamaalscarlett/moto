@@ -40,12 +40,16 @@ from moto.s3.exceptions import MissingBucket, MissingKey
 from moto.s3.models import FakeKey, s3_backends
 from moto.sqs.models import sqs_backends
 from moto.utilities.docker_utilities import DockerModel
-from moto.utilities.utils import load_resource_as_bytes
+from moto.utilities.utils import (
+    ARN_PARTITION_REGEX,
+    get_partition,
+    load_resource_as_bytes,
+)
 
 from .exceptions import (
     ConflictException,
     CrossAccountNotAllowed,
-    FunctionUrlConfigNotFound,
+    GenericResourcNotFound,
     InvalidParameterValueException,
     InvalidRoleFormat,
     UnknownAliasException,
@@ -280,12 +284,12 @@ def _s3_content(key: Any) -> Tuple[bytes, int, str, str]:
 
 
 def _validate_s3_bucket_and_key(
-    account_id: str, data: Dict[str, Any]
+    account_id: str, partition: str, data: Dict[str, Any]
 ) -> Optional[FakeKey]:
     key = None
     try:
         # FIXME: does not validate bucket region
-        key = s3_backends[account_id]["global"].get_object(
+        key = s3_backends[account_id][partition].get_object(
             data["S3Bucket"], data["S3Key"]
         )
     except MissingBucket:
@@ -440,7 +444,10 @@ class LayerVersion(CloudFormationModel):
                 self.code_digest,
             ) = _zipfile_content(self.content["ZipFile"])
         else:
-            key = _validate_s3_bucket_and_key(account_id, data=self.content)
+            partition = get_partition(region)
+            key = _validate_s3_bucket_and_key(
+                account_id, partition=partition, data=self.content
+            )
             if key:
                 (
                     self.code_bytes,
@@ -529,9 +536,7 @@ class LambdaAlias(BaseModel):
         description: str,
         routing_config: str,
     ):
-        self.arn = (
-            f"arn:aws:lambda:{region}:{account_id}:function:{function_name}:{name}"
-        )
+        self.arn = f"arn:{get_partition(region)}:lambda:{region}:{account_id}:function:{function_name}:{name}"
         self.name = name
         self.function_version = function_version
         self.description = description
@@ -607,6 +612,7 @@ class LambdaFunction(CloudFormationModel, DockerModel):
         # required
         self.account_id = account_id
         self.region = region
+        self.partition = get_partition(region)
         self.code = spec["Code"]
         self.function_name = spec["FunctionName"]
         self.handler = spec.get("Handler")
@@ -739,7 +745,7 @@ class LambdaFunction(CloudFormationModel, DockerModel):
             {"Arn": lv.arn, "CodeSize": lv.code_size} for lv in layer_versions if lv
         ]
 
-    def get_code_signing_config(self) -> Dict[str, Any]:
+    def get_function_code_signing_config(self) -> Dict[str, Any]:
         return {
             "CodeSigningConfigArn": self.code_signing_config_arn,
             "FunctionName": self.function_name,
@@ -860,11 +866,13 @@ class LambdaFunction(CloudFormationModel, DockerModel):
             try:
                 if from_update:
                     # FIXME: does not validate bucket region
-                    key = s3_backends[self.account_id]["global"].get_object(
+                    key = s3_backends[self.account_id][self.partition].get_object(
                         updated_spec["S3Bucket"], updated_spec["S3Key"]
                     )
                 else:
-                    key = _validate_s3_bucket_and_key(self.account_id, data=self.code)
+                    key = _validate_s3_bucket_and_key(
+                        self.account_id, partition=self.partition, data=self.code
+                    )
             except MissingBucket:
                 if do_validate_s3():
                     raise ValueError(
@@ -1142,9 +1150,9 @@ class LambdaFunction(CloudFormationModel, DockerModel):
         spec = {
             "Code": properties["Code"],
             "FunctionName": resource_name,
-            "Handler": properties["Handler"],
+            "Handler": properties.get("Handler"),
             "Role": properties["Role"],
-            "Runtime": properties["Runtime"],
+            "Runtime": properties.get("Runtime"),
         }
 
         # NOTE: Not doing `properties.get(k, DEFAULT)` to avoid duplicating the
@@ -1216,7 +1224,7 @@ class LambdaFunction(CloudFormationModel, DockerModel):
 
     def get_url_config(self) -> "FunctionUrlConfig":
         if not self.url_config:
-            raise FunctionUrlConfigNotFound()
+            raise GenericResourcNotFound()
         return self.url_config
 
     def update_url_config(self, config: Dict[str, Any]) -> "FunctionUrlConfig":
@@ -1271,7 +1279,6 @@ class EventSourceMapping(CloudFormationModel):
         return event_source_arn.split(":")[2].lower()
 
     def _validate_event_source(self, event_source_arn: str) -> bool:
-
         valid_services = ("dynamodb", "kinesis", "sqs")
         service = self._get_service_source_from_arn(event_source_arn)
         return service in valid_services
@@ -1409,7 +1416,7 @@ class LambdaVersion(CloudFormationModel):
     ) -> "LambdaVersion":
         properties = cloudformation_json["Properties"]
         function_name = properties["FunctionName"]
-        func = lambda_backends[account_id][region_name].publish_function(function_name)
+        func = lambda_backends[account_id][region_name].publish_version(function_name)
         spec = {"Version": func.version}  # type: ignore[union-attr]
         return LambdaVersion(spec)
 
@@ -1418,11 +1425,12 @@ class LambdaStorage(object):
     def __init__(self, region_name: str, account_id: str):
         # Format 'func_name' {'versions': []}
         self._functions: Dict[str, Any] = {}
-        self._arns: weakref.WeakValueDictionary[
-            str, LambdaFunction
-        ] = weakref.WeakValueDictionary()
+        self._arns: weakref.WeakValueDictionary[str, LambdaFunction] = (
+            weakref.WeakValueDictionary()
+        )
         self.region_name = region_name
         self.account_id = account_id
+        self.partition = get_partition(region_name)
 
         # function-arn -> alias -> LambdaAlias
         self._aliases: Dict[str, Dict[str, LambdaAlias]] = defaultdict(lambda: {})
@@ -1452,7 +1460,7 @@ class LambdaStorage(object):
         if name in aliases:
             return aliases[name]
 
-        arn = f"arn:aws:lambda:{self.region_name}:{self.account_id}:function:{function_name}:{name}"
+        arn = f"arn:{get_partition(self.region_name)}:lambda:{self.region_name}:{self.account_id}:function:{function_name}:{name}"
         raise UnknownAliasException(arn)
 
     def put_alias(
@@ -1468,7 +1476,7 @@ class LambdaStorage(object):
         )
         aliases = self._get_function_aliases(function_name)
         if name in aliases:
-            arn = f"arn:aws:lambda:{self.region_name}:{self.account_id}:function:{function_name}:{name}"
+            arn = f"arn:{get_partition(self.region_name)}:lambda:{self.region_name}:{self.account_id}:function:{function_name}:{name}"
             raise ConflictException(f"Alias already exists: {arn}")
 
         alias = LambdaAlias(
@@ -1602,7 +1610,7 @@ class LambdaStorage(object):
         :raises: InvalidParameterValue if qualifier is provided
         """
 
-        if name_or_arn.startswith("arn:aws"):
+        if re.match(ARN_PARTITION_REGEX, name_or_arn):
             [_, name, qualifier] = self.split_function_arn(name_or_arn)
 
             if qualifier is not None:
@@ -1621,7 +1629,7 @@ class LambdaStorage(object):
         :raises: UnknownFunctionException if function not found
         """
 
-        if name_or_arn.startswith("arn:aws"):
+        if re.match(ARN_PARTITION_REGEX, name_or_arn):
             [_, name, qualifier_in_arn] = self.split_function_arn(name_or_arn)
             return self.get_function_by_name_with_qualifier(
                 name, qualifier_in_arn or qualifier
@@ -1632,7 +1640,7 @@ class LambdaStorage(object):
     def construct_unknown_function_exception(
         self, name_or_arn: str, qualifier: Optional[str] = None
     ) -> UnknownFunctionException:
-        if name_or_arn.startswith("arn:aws"):
+        if re.match(ARN_PARTITION_REGEX, name_or_arn):
             arn = name_or_arn
         else:
             # name_or_arn is a function name with optional qualifier <func_name>[:<qualifier>]
@@ -1649,7 +1657,7 @@ class LambdaStorage(object):
             if account != self.account_id:
                 raise CrossAccountNotAllowed()
             try:
-                iam_backend = iam_backends[self.account_id]["global"]
+                iam_backend = iam_backends[self.account_id][self.partition]
                 iam_backend.get_role_by_arn(fn.role)
             except IAMNotFoundException:
                 raise InvalidParameterValueException(
@@ -1663,7 +1671,7 @@ class LambdaStorage(object):
             self._functions[fn.function_name] = {"latest": fn, "versions": []}
         self._arns[fn.function_arn] = fn
 
-    def publish_function(
+    def publish_version(
         self, name_or_arn: str, description: str = ""
     ) -> Optional[LambdaFunction]:
         function = self.get_function_by_name_or_arn_forbid_qualifier(name_or_arn)
@@ -1692,7 +1700,7 @@ class LambdaStorage(object):
 
     def del_function(self, name_or_arn: str, qualifier: Optional[str] = None) -> None:
         # Qualifier may be explicitly passed or part of function name or ARN, extract it here
-        if name_or_arn.startswith("arn:aws"):
+        if re.match(ARN_PARTITION_REGEX, name_or_arn):
             # Extract from ARN
             if ":" in name_or_arn.split(":function:")[-1]:
                 qualifier = name_or_arn.split(":")[-1]
@@ -1758,9 +1766,9 @@ class LambdaStorage(object):
 class LayerStorage(object):
     def __init__(self) -> None:
         self._layers: Dict[str, Layer] = {}
-        self._arns: weakref.WeakValueDictionary[
-            str, LambdaFunction
-        ] = weakref.WeakValueDictionary()
+        self._arns: weakref.WeakValueDictionary[str, LambdaFunction] = (
+            weakref.WeakValueDictionary()
+        )
 
     def _find_layer_by_name_or_arn(self, name_or_arn: str) -> Layer:
         if name_or_arn in self._layers:
@@ -1894,15 +1902,6 @@ class LambdaBackend(BaseBackend):
         self._event_source_mappings: Dict[str, EventSourceMapping] = {}
         self._layers = LayerStorage()
 
-    @staticmethod
-    def default_vpc_endpoint_service(
-        service_region: str, zones: List[str]
-    ) -> List[Dict[str, str]]:
-        """Default VPC endpoint service."""
-        return BaseBackend.default_vpc_endpoint_service_factory(
-            service_region, zones, "lambda"
-        )
-
     def create_alias(
         self,
         name: str,
@@ -1954,7 +1953,7 @@ class LambdaBackend(BaseBackend):
         self._lambdas.put_function(fn)
 
         if spec.get("Publish"):
-            ver = self.publish_function(function_name)
+            ver = self.publish_version(function_name)
             fn = copy.deepcopy(
                 fn
             )  # We don't want to change the actual version - just the return value
@@ -2078,16 +2077,16 @@ class LambdaBackend(BaseBackend):
     def get_layer_version(self, layer_name: str, layer_version: str) -> LayerVersion:
         return self._layers.get_layer_version(layer_name, layer_version)
 
-    def get_layer_versions(self, layer_name: str) -> Iterable[LayerVersion]:
+    def list_layer_versions(self, layer_name: str) -> Iterable[LayerVersion]:
         return self._layers.get_layer_versions(layer_name)
 
     def layers_versions_by_arn(self, layer_version_arn: str) -> Optional[LayerVersion]:
         return self._layers.get_layer_version_by_arn(layer_version_arn)
 
-    def publish_function(
+    def publish_version(
         self, function_name: str, description: str = ""
     ) -> Optional[LambdaFunction]:
-        return self._lambdas.publish_function(function_name, description)
+        return self._lambdas.publish_version(function_name, description)
 
     def get_function(
         self, function_name_or_arn: str, qualifier: Optional[str] = None
@@ -2347,9 +2346,9 @@ class LambdaBackend(BaseBackend):
         fn = self.get_function(function_name)
         fn.policy.del_statement(sid, revision)
 
-    def get_code_signing_config(self, function_name: str) -> Dict[str, Any]:
+    def get_function_code_signing_config(self, function_name: str) -> Dict[str, Any]:
         fn = self.get_function(function_name)
-        return fn.get_code_signing_config()
+        return fn.get_function_code_signing_config()
 
     def get_policy(self, function_name: str, qualifier: Optional[str] = None) -> str:
         fn = self._lambdas.get_function_by_name_or_arn_with_qualifier(
@@ -2364,7 +2363,7 @@ class LambdaBackend(BaseBackend):
         fn.update_function_code(body)
 
         if body.get("Publish", False):
-            fn = self.publish_function(function_name)  # type: ignore[assignment]
+            fn = self.publish_version(function_name)  # type: ignore[assignment]
 
         return fn.update_function_code(body)
 
@@ -2385,6 +2384,26 @@ class LambdaBackend(BaseBackend):
     ) -> Optional[Union[str, bytes]]:
         """
         Invoking a Function with PackageType=Image is not yet supported.
+
+        Invoking a Funcation against Lambda without docker now supports customised responses, the default being `Simple Lambda happy path OK`.
+        You can use a dedicated API to override this, by configuring a queue of expected results.
+
+        A request to `invoke` will take the first result from that queue.
+
+        Configure this queue by making an HTTP request to `/moto-api/static/lambda-simple/response`. An example invocation looks like this:
+
+        .. sourcecode:: python
+
+            expected_results = {"results": ["test", "test 2"], "region": "us-east-1"}
+            resp = requests.post(
+                "http://motoapi.amazonaws.com/moto-api/static/lambda-simple/response",
+                json=expected_results
+            )
+            assert resp.status_code == 201
+
+            client = boto3.client("lambda", region_name="us-east-1")
+            resp = client.invoke(...) # resp["Payload"].read().decode() == "test"
+            resp = client.invoke(...) # resp["Payload"].read().decode() == "test2"
         """
         fn = self.get_function(function_name, qualifier)
         payload = fn.invoke(body, headers, response_headers)

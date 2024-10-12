@@ -72,6 +72,7 @@ ec2
 - [X] copy_image
 - [X] copy_snapshot
 - [ ] create_capacity_reservation
+- [ ] create_capacity_reservation_by_splitting
 - [ ] create_capacity_reservation_fleet
 - [X] create_carrier_gateway
 - [ ] create_client_vpn_endpoint
@@ -92,6 +93,7 @@ ec2
 - [ ] create_instance_export_task
 - [X] create_internet_gateway
 - [ ] create_ipam
+- [ ] create_ipam_external_resource_verification_token
 - [ ] create_ipam_pool
 - [ ] create_ipam_resource_discovery
 - [ ] create_ipam_scope
@@ -172,6 +174,7 @@ ec2
 - [ ] delete_instance_event_window
 - [X] delete_internet_gateway
 - [ ] delete_ipam
+- [ ] delete_ipam_external_resource_verification_token
 - [ ] delete_ipam_pool
 - [ ] delete_ipam_resource_discovery
 - [ ] delete_ipam_scope
@@ -242,7 +245,7 @@ ec2
 - [ ] describe_account_attributes
 - [ ] describe_address_transfers
 - [X] describe_addresses
-- [ ] describe_addresses_attribute
+- [X] describe_addresses_attribute
 - [ ] describe_aggregate_id_format
 - [X] describe_availability_zones
   
@@ -309,6 +312,7 @@ ec2
 - [X] describe_instances
 - [X] describe_internet_gateways
 - [ ] describe_ipam_byoasn
+- [ ] describe_ipam_external_resource_verification_tokens
 - [ ] describe_ipam_pools
 - [ ] describe_ipam_resource_discoveries
 - [ ] describe_ipam_resource_discovery_associations
@@ -325,6 +329,7 @@ ec2
 - [ ] describe_local_gateway_virtual_interfaces
 - [ ] describe_local_gateways
 - [ ] describe_locked_snapshots
+- [ ] describe_mac_hosts
 - [X] describe_managed_prefix_lists
 - [ ] describe_moving_addresses
 - [X] describe_nat_gateways
@@ -365,6 +370,7 @@ ec2
 - [ ] describe_store_image_tasks
 - [X] describe_subnets
 - [X] describe_tags
+- [ ] describe_traffic_mirror_filter_rules
 - [ ] describe_traffic_mirror_filters
 - [ ] describe_traffic_mirror_sessions
 - [ ] describe_traffic_mirror_targets
@@ -434,6 +440,7 @@ ec2
 - [ ] disable_image
 - [ ] disable_image_block_public_access
 - [ ] disable_image_deprecation
+- [ ] disable_image_deregistration_protection
 - [ ] disable_ipam_organization_admin_account
 - [ ] disable_serial_console_access
 - [ ] disable_snapshot_block_public_access
@@ -464,6 +471,7 @@ ec2
 - [ ] enable_image
 - [ ] enable_image_block_public_access
 - [ ] enable_image_deprecation
+- [ ] enable_image_deregistration_protection
 - [ ] enable_ipam_organization_admin_account
 - [ ] enable_reachability_analyzer_organization_sharing
 - [ ] enable_serial_console_access
@@ -491,6 +499,8 @@ ec2
 - [ ] get_groups_for_capacity_reservation
 - [ ] get_host_reservation_purchase_preview
 - [ ] get_image_block_public_access_state
+- [ ] get_instance_metadata_defaults
+- [ ] get_instance_tpm_ek_pub
 - [ ] get_instance_types_from_instance_requirements
 - [ ] get_instance_uefi_data
 - [ ] get_ipam_address_history
@@ -539,7 +549,7 @@ ec2
 - [ ] modify_capacity_reservation_fleet
 - [ ] modify_client_vpn_endpoint
 - [ ] modify_default_credit_specification
-- [ ] modify_ebs_default_kms_key_id
+- [X] modify_ebs_default_kms_key_id
 - [ ] modify_fleet
 - [ ] modify_fpga_image_attribute
 - [X] modify_hosts
@@ -552,6 +562,7 @@ ec2
 - [ ] modify_instance_event_start_time
 - [ ] modify_instance_event_window
 - [ ] modify_instance_maintenance_options
+- [ ] modify_instance_metadata_defaults
 - [ ] modify_instance_metadata_options
 - [ ] modify_instance_placement
 - [ ] modify_ipam
@@ -604,6 +615,7 @@ ec2
 - [ ] monitor_instances
 - [ ] move_address_to_vpc
 - [ ] move_byoip_cidr_to_ipam
+- [ ] move_capacity_reservation_instances
 - [ ] provision_byoip_cidr
 - [ ] provision_ipam_byoasn
 - [ ] provision_ipam_pool_cidr

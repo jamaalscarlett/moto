@@ -43,7 +43,7 @@ ssm
 - [ ] delete_inventory
 - [X] delete_maintenance_window
   
-        Assumes the provided WindowId exists. No error handling has been implemented yet.
+        Delete a maintenance window.
         
 
 - [ ] delete_ops_item
@@ -85,6 +85,7 @@ ssm
 - [ ] describe_instance_patch_states
 - [ ] describe_instance_patch_states_for_patch_group
 - [ ] describe_instance_patches
+- [ ] describe_instance_properties
 - [ ] describe_inventory_deletions
 - [ ] describe_maintenance_window_execution_task_invocations
 - [ ] describe_maintenance_window_execution_tasks
@@ -127,7 +128,6 @@ ssm
 - [ ] get_inventory_schema
 - [X] get_maintenance_window
   
-        The window is assumed to exist - no error handling has been implemented yet.
         The NextExecutionTime-field is not returned.
         
 

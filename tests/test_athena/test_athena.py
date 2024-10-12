@@ -5,6 +5,7 @@ from botocore.exceptions import ClientError
 from moto import mock_aws, settings
 from moto.athena.models import QueryResults, athena_backends
 from moto.core import DEFAULT_ACCOUNT_ID
+from tests import aws_verified
 
 
 @mock_aws
@@ -57,32 +58,56 @@ def test_create_work_group():
     assert work_group["State"] == "ENABLED"
 
 
-@mock_aws
+@aws_verified
+@pytest.mark.aws_verified
 def test_get_primary_workgroup():
     client = boto3.client("athena", region_name="us-east-1")
-    assert len(client.list_work_groups()["WorkGroups"]) == 1
+    assert len(client.list_work_groups()["WorkGroups"]) >= 1
 
     primary = client.get_work_group(WorkGroup="primary")["WorkGroup"]
     assert primary["Name"] == "primary"
-    assert primary["Configuration"] == {}
+    assert primary["Configuration"] == {
+        "ResultConfiguration": {},
+        "EnforceWorkGroupConfiguration": False,
+        "PublishCloudWatchMetricsEnabled": False,
+        "RequesterPaysEnabled": False,
+        "EngineVersion": {
+            "SelectedEngineVersion": "AUTO",
+            "EffectiveEngineVersion": "Athena engine version 3",
+        },
+        "EnableMinimumEncryptionConfiguration": False,
+    }
 
 
-@mock_aws
+@aws_verified
+@pytest.mark.aws_verified
 def test_create_and_get_workgroup():
     client = boto3.client("athena", region_name="us-east-1")
 
-    create_basic_workgroup(client=client, name="athena_workgroup")
+    wg_name = "athena_workgroup"
+    create_basic_workgroup(client=client, name=wg_name)
 
-    work_group = client.get_work_group(WorkGroup="athena_workgroup")["WorkGroup"]
-    del work_group["CreationTime"]  # Were not testing creationtime atm
-    assert work_group == {
-        "Name": "athena_workgroup",
-        "State": "ENABLED",
-        "Configuration": {
-            "ResultConfiguration": {"OutputLocation": "s3://bucket-name/prefix/"}
-        },
-        "Description": "Test work group",
-    }
+    try:
+        work_group = client.get_work_group(WorkGroup=wg_name)["WorkGroup"]
+        del work_group["CreationTime"]  # We're not testing creationtime atm
+        assert work_group == {
+            "Name": wg_name,
+            "State": "ENABLED",
+            "Configuration": {
+                "ResultConfiguration": {"OutputLocation": "s3://bucket-name/prefix/"},
+                "EnforceWorkGroupConfiguration": True,
+                "PublishCloudWatchMetricsEnabled": False,
+                "RequesterPaysEnabled": False,
+                "EngineVersion": {
+                    "SelectedEngineVersion": "AUTO",
+                    "EffectiveEngineVersion": "Athena engine version 3",
+                },
+                "EnableMinimumEncryptionConfiguration": False,
+            },
+            "Description": "Test work group",
+        }
+    finally:
+        client.delete_work_group(WorkGroup=wg_name)
 
 
 @mock_aws
@@ -108,6 +133,19 @@ def test_start_query_execution():
 
 
 @mock_aws
+def test_start_query_execution_without_result_configuration():
+    client = boto3.client("athena", region_name="us-east-1")
+
+    create_basic_workgroup(client=client, name="athena_workgroup")
+    response = client.start_query_execution(
+        QueryString="query1",
+        QueryExecutionContext={"Database": "string"},
+        WorkGroup="athena_workgroup",
+    )
+    assert "QueryExecutionId" in response
+
+
+@mock_aws
 def test_start_query_validate_workgroup():
     client = boto3.client("athena", region_name="us-east-1")
 
@@ -123,11 +161,13 @@ def test_start_query_validate_workgroup():
 
 
 @mock_aws
-def test_get_query_execution():
+@pytest.mark.parametrize(
+    "location", ["s3://bucket-name/prefix/", "s3://bucket-name/prefix_wo_slash"]
+)
+def test_get_query_execution(location):
     client = boto3.client("athena", region_name="us-east-1")
 
     query = "SELECT stuff"
-    location = "s3://bucket-name/prefix/"
     database = "database"
     # Start Query
     exex_id = client.start_query_execution(
@@ -141,7 +181,11 @@ def test_get_query_execution():
     assert details["QueryExecutionId"] == exex_id
     assert details["Query"] == query
     assert details["StatementType"] == "DML"
-    assert details["ResultConfiguration"]["OutputLocation"] == location
+    result_config = details["ResultConfiguration"]
+    if location.endswith("/"):
+        assert result_config["OutputLocation"] == f"{location}{exex_id}.csv"
+    else:
+        assert result_config["OutputLocation"] == f"{location}/{exex_id}.csv"
     assert details["QueryExecutionContext"]["Database"] == database
     assert details["Status"]["State"] == "SUCCEEDED"
     assert details["Statistics"] == {
@@ -153,6 +197,22 @@ def test_get_query_execution():
         "ServiceProcessingTimeInMillis": 0,
     }
     assert "WorkGroup" not in details
+
+
+@mock_aws
+def test_get_query_execution_with_execution_parameters():
+    client = boto3.client("athena", region_name="us-east-1")
+
+    exex_id = client.start_query_execution(
+        QueryString="SELECT stuff",
+        QueryExecutionContext={"Database": "database"},
+        ResultConfiguration={"OutputLocation": "s3://bucket-name/prefix/"},
+        ExecutionParameters=["param1", "param2"],
+    )["QueryExecutionId"]
+
+    details = client.get_query_execution(QueryExecutionId=exex_id)["QueryExecution"]
+    assert details["QueryExecutionId"] == exex_id
+    assert details["ExecutionParameters"] == ["param1", "param2"]
 
 
 @mock_aws

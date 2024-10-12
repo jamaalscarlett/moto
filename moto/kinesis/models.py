@@ -14,7 +14,7 @@ from moto.core.common_models import BaseModel, CloudFormationModel
 from moto.core.utils import unix_time, utcnow
 from moto.moto_api._internal import mock_random as random
 from moto.utilities.paginator import paginate
-from moto.utilities.utils import md5_hash
+from moto.utilities.utils import get_partition, md5_hash
 
 from .exceptions import (
     ConsumerNotFound,
@@ -51,7 +51,7 @@ class Consumer(BaseModel):
         self.created = unix_time()
         self.stream_arn = stream_arn
         stream_name = stream_arn.split("/")[-1]
-        self.consumer_arn = f"arn:aws:kinesis:{region_name}:{account_id}:stream/{stream_name}/consumer/{consumer_name}"
+        self.consumer_arn = f"arn:{get_partition(region_name)}:kinesis:{region_name}:{account_id}:stream/{stream_name}/consumer/{consumer_name}"
 
     def to_json(self, include_stream_arn: bool = False) -> Dict[str, Any]:
         resp = {
@@ -207,7 +207,7 @@ class Stream(CloudFormationModel):
         )
         self.region = region_name
         self.account_id = account_id
-        self.arn = f"arn:aws:kinesis:{region_name}:{account_id}:stream/{stream_name}"
+        self.arn = f"arn:{get_partition(region_name)}:kinesis:{region_name}:{account_id}:stream/{stream_name}"
         self.shards: Dict[str, Shard] = {}
         self.tags: Dict[str, str] = {}
         self.status = "ACTIVE"
@@ -366,7 +366,7 @@ class Stream(CloudFormationModel):
                 [s for s in shard_list[0:-1:2]], [s for s in shard_list[1::2]]
             )
 
-            for (shard, adjacent) in adjacent_shards:
+            for shard, adjacent in adjacent_shards:
                 self.merge_shards(shard.shard_id, adjacent.shard_id)
                 required_shard_merges -= 1
                 if required_shard_merges == 0:
@@ -683,7 +683,9 @@ class KinesisBackend(BaseBackend):
         )
 
         next_shard_iterator = compose_shard_iterator(
-            stream_name, shard, last_sequence_id  # type: ignore
+            stream_name,
+            shard,
+            last_sequence_id,  # type: ignore
         )
 
         return next_shard_iterator, records, millis_behind_latest
@@ -732,7 +734,9 @@ class KinesisBackend(BaseBackend):
             data = record.get("Data")
 
             sequence_number, shard_id = stream.put_record(
-                partition_key, explicit_hash_key, data  # type: ignore[arg-type]
+                partition_key,  # type: ignore[arg-type]
+                explicit_hash_key,  # type: ignore[arg-type]
+                data,  # type: ignore[arg-type]
             )
             response["Records"].append(
                 {"SequenceNumber": sequence_number, "ShardId": shard_id}

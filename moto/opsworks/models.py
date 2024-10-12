@@ -5,6 +5,7 @@ from moto.core.common_models import BaseModel
 from moto.core.utils import utcnow
 from moto.ec2 import ec2_backends
 from moto.moto_api._internal import mock_random as random
+from moto.utilities.utils import get_partition
 
 from .exceptions import ResourceNotFoundException, ValidationException
 
@@ -40,7 +41,6 @@ class OpsworkInstance(BaseModel):
         associate_public_ip: Optional[str] = None,
         security_group_ids: Optional[List[str]] = None,
     ):
-
         self.ec2_backend = ec2_backend
 
         self.instance_profile_arn = instance_profile_arn
@@ -320,7 +320,6 @@ class Stack(BaseModel):
         default_root_device_type: str = "instance-store",
         agent_version: str = "LATEST",
     ):
-
         self.name = name
         self.region = region
         self.service_role_arn = service_role_arn
@@ -364,7 +363,7 @@ class Stack(BaseModel):
 
     @property
     def arn(self) -> str:
-        return f"arn:aws:opsworks:{self.region}:{self.account_number}:stack/{self.id}"
+        return f"arn:{get_partition(self.region)}:opsworks:{self.region}:{self.account_number}:stack/{self.id}"
 
     def to_dict(self) -> Dict[str, Any]:
         response = {
@@ -590,7 +589,9 @@ class OpsWorksBackend(BaseBackend):
             raise ResourceNotFoundException(", ".join(unknown_apps))
         return [self.apps[id].to_dict() for id in app_ids]
 
-    def describe_instances(self, instance_ids: List[str], layer_id: str, stack_id: str) -> List[Dict[str, Any]]:  # type: ignore[return]
+    def describe_instances(  # type: ignore[return]
+        self, instance_ids: List[str], layer_id: str, stack_id: str
+    ) -> List[Dict[str, Any]]:
         if len(list(filter(None, (instance_ids, layer_id, stack_id)))) != 1:
             raise ValidationException(
                 "Please provide either one or more "
@@ -629,4 +630,4 @@ class OpsWorksBackend(BaseBackend):
         self.instances[instance_id].start()
 
 
-opsworks_backends = BackendDict(OpsWorksBackend, "ec2")
+opsworks_backends = BackendDict(OpsWorksBackend, "opsworks")

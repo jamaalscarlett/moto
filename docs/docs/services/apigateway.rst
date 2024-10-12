@@ -55,7 +55,7 @@ apigateway
 - [ ] flush_stage_authorizers_cache
 - [ ] flush_stage_cache
 - [ ] generate_client_certificate
-- [ ] get_account
+- [X] get_account
 - [X] get_api_key
 - [X] get_api_keys
 - [X] get_authorizer
@@ -130,7 +130,7 @@ apigateway
 - [ ] test_invoke_authorizer
 - [ ] test_invoke_method
 - [ ] untag_resource
-- [ ] update_account
+- [X] update_account
 - [X] update_api_key
 - [X] update_authorizer
 - [X] update_base_path_mapping
@@ -155,7 +155,7 @@ apigateway
         The following PatchOperations are currently supported:
         add    : Everything except /apiStages/{apidId:stageName}/throttle/ and children
         replace: Everything except /apiStages/{apidId:stageName}/throttle/ and children
-        remove : Nothing yet
+        remove : Everything except /apiStages/{apidId:stageName}/throttle/ and children
         copy   : Nothing yet
         
 

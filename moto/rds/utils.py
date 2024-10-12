@@ -22,7 +22,6 @@ FilterDef = namedtuple(
 
 
 class DbInstanceEngine(str, Enum):
-
     # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/rds/client/create_db_instance.html
     # 2023-11-08
     AURORA_MYSQL = "aurora-mysql"
@@ -52,6 +51,7 @@ class DbInstanceEngine(str, Enum):
 class ClusterEngine(str, Enum):
     AURORA_POSTGRESQL = "aurora-postgresql"
     AURORA_MYSQL = "aurora-mysql"
+    NEPTUNE = "neptune"
     RDS_POSTGRESQL = "postgres"
     RDS_MYSQL = "mysql"
 

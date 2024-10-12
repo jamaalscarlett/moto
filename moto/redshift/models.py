@@ -11,6 +11,7 @@ from moto.core.utils import iso_8601_datetime_with_milliseconds
 from moto.ec2 import ec2_backends
 from moto.ec2.models.security_groups import SecurityGroup as EC2SecurityGroup
 from moto.moto_api._internal import mock_random
+from moto.utilities.utils import get_partition
 
 from .exceptions import (
     ClusterAlreadyExistsFaultError,
@@ -51,10 +52,7 @@ class TaggableResourceMixin:
 
     @property
     def arn(self) -> str:
-        return (
-            f"arn:aws:redshift:{self.region}:{self.account_id}"
-            f":{self.resource_type}:{self.resource_id}"
-        )
+        return f"arn:{get_partition(self.region)}:redshift:{self.region}:{self.account_id}:{self.resource_type}:{self.resource_id}"
 
     def create_tags(self, tags: List[Dict[str, str]]) -> List[Dict[str, str]]:
         new_keys = [tag_set["Key"] for tag_set in tags]
@@ -329,9 +327,9 @@ class Cluster(TaggableResourceMixin, CloudFormationModel):
                 "EstimatedTimeToCompletionInSeconds": 123,
             }
         if self.cluster_snapshot_copy_status is not None:
-            json_response[
-                "ClusterSnapshotCopyStatus"
-            ] = self.cluster_snapshot_copy_status
+            json_response["ClusterSnapshotCopyStatus"] = (
+                self.cluster_snapshot_copy_status
+            )
         return json_response
 
 
@@ -594,17 +592,6 @@ class RedshiftBackend(BaseBackend):
             "subnetgroup": self.subnet_groups,  # type: ignore
         }
         self.snapshot_copy_grants: Dict[str, SnapshotCopyGrant] = {}
-
-    @staticmethod
-    def default_vpc_endpoint_service(
-        service_region: str, zones: List[str]
-    ) -> List[Dict[str, str]]:
-        """Default VPC endpoint service."""
-        return BaseBackend.default_vpc_endpoint_service_factory(
-            service_region, zones, "redshift"
-        ) + BaseBackend.default_vpc_endpoint_service_factory(
-            service_region, zones, "redshift-data", policy_supported=False
-        )
 
     def enable_snapshot_copy(self, **kwargs: Any) -> Cluster:
         cluster_identifier = kwargs["cluster_identifier"]

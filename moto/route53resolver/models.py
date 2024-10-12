@@ -1,4 +1,5 @@
 """Route53ResolverBackend class with methods for supported APIs."""
+
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from moto.route53resolver.utils import PAGINATION_MODEL
 from moto.route53resolver.validations import validate_args
 from moto.utilities.paginator import paginate
 from moto.utilities.tagging_service import TaggingService
+from moto.utilities.utils import get_partition
 
 CAMEL_TO_SNAKE_PATTERN = re.compile(r"(?<!^)(?=[A-Z])")
 
@@ -122,14 +124,13 @@ class ResolverRule(BaseModel):  # pylint: disable=too-many-instance-attributes
             f"[Trace id: 1-{mock_random.get_random_hex(8)}-{mock_random.get_random_hex(24)}] "
             f"Successfully created Resolver Rule"
         )
-        self.share_status = "SHARED_WITH_ME"
+        self.share_status = "NOT_SHARED"
         self.creation_time = datetime.now(timezone.utc).isoformat()
         self.modification_time = datetime.now(timezone.utc).isoformat()
 
     @property
     def arn(self) -> str:
-        """Return ARN for this resolver rule."""
-        return f"arn:aws:route53resolver:{self.region}:{self.account_id}:resolver-rule/{self.id}"
+        return f"arn:{get_partition(self.region)}:route53resolver:{self.region}:{self.account_id}:resolver-rule/{self.id}"
 
     def description(self) -> Dict[str, Any]:
         """Return a dictionary of relevant info for this resolver rule."""
@@ -212,8 +213,7 @@ class ResolverEndpoint(BaseModel):  # pylint: disable=too-many-instance-attribut
 
     @property
     def arn(self) -> str:
-        """Return ARN for this resolver endpoint."""
-        return f"arn:aws:route53resolver:{self.region}:{self.account_id}:resolver-endpoint/{self.id}"
+        return f"arn:{get_partition(self.region)}:route53resolver:{self.region}:{self.account_id}:resolver-endpoint/{self.id}"
 
     def _vpc_id_from_subnet(self) -> str:
         """Return VPC Id associated with the subnet.
@@ -233,9 +233,9 @@ class ResolverEndpoint(BaseModel):  # pylint: disable=too-many-instance-attribut
         """
         subnets: Dict[str, Any] = defaultdict(dict)
         for entry in self.ip_addresses:
-            subnets[entry["SubnetId"]][
-                entry["Ip"]
-            ] = f"rni-{mock_random.get_random_hex(17)}"
+            subnets[entry["SubnetId"]][entry["Ip"]] = (
+                f"rni-{mock_random.get_random_hex(17)}"
+            )
         return subnets
 
     def create_eni(self) -> List[str]:

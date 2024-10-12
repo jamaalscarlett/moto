@@ -1,6 +1,8 @@
 import json
 
 import boto3
+import pytest
+from botocore.exceptions import ClientError
 
 from moto import mock_aws
 from tests import EXAMPLE_AMI_ID
@@ -51,7 +53,11 @@ def test_create_simple_cluster__using_cloudformation():
 
     # Verify outputs
     stack = cf.describe_stacks(StackName="teststack")["Stacks"][0]
-    assert {"OutputKey": "ClusterId", "OutputValue": cluster_id} in stack["Outputs"]
+    assert {
+        "OutputKey": "ClusterId",
+        "OutputValue": cluster_id,
+        "Description": "Cluster info",
+    } in stack["Outputs"]
 
     # Verify EMR Cluster
     cl = emr.describe_cluster(ClusterId=cluster_id)["Cluster"]
@@ -496,6 +502,7 @@ template_with_kerberos_attrs = {
         "securityConfiguration": {
             "Type": "AWS::EMR::SecurityConfiguration",
             "Properties": {
+                "Name": "mysecconfig",
                 "SecurityConfiguration": {
                     "AuthenticationConfiguration": {
                         "KerberosConfiguration": {
@@ -511,7 +518,7 @@ template_with_kerberos_attrs = {
                             },
                         }
                     }
-                }
+                },
             },
         },
         "emrRole": {
@@ -617,4 +624,207 @@ def test_create_cluster_with_kerberos_attrs():
         "Realm": "EC2.INTERNAL",
         "KdcAdminPassword": "adminp2ss",
         "CrossRealmTrustPrincipalPassword": "p2ss",
+    }
+
+    # Verify everything can be deleted
+    cf.delete_stack(StackName="teststack")
+
+    cl = emr.describe_cluster(ClusterId=cluster_id)["Cluster"]
+    assert cl["Status"]["State"] == "TERMINATED"
+
+    with pytest.raises(ClientError) as exc:
+        emr.describe_security_configuration(Name="mysecconfig")
+    err = exc.value.response["Error"]
+    assert err["Code"] == "InvalidRequestException"
+
+
+template_with_simple_instance_group_config = {
+    "Resources": {
+        "Cluster1": {
+            "Type": "AWS::EMR::Cluster",
+            "Properties": {
+                "Instances": {
+                    "CoreInstanceGroup": {
+                        "InstanceCount": 3,
+                        "InstanceType": "m3g",
+                    }
+                },
+                "JobFlowRole": "EMR_EC2_DefaultRole",
+                "Name": "my cluster",
+                "ServiceRole": "EMR_DefaultRole",
+            },
+        },
+        "TestInstanceGroupConfig": {
+            "Type": "AWS::EMR::InstanceGroupConfig",
+            "Properties": {
+                "InstanceCount": 2,
+                "InstanceType": "m3.xlarge",
+                "InstanceRole": "TASK",
+                "Market": "ON_DEMAND",
+                "Name": "cfnTask2",
+                "JobFlowId": {"Ref": "Cluster1"},
+            },
+        },
+    },
+}
+
+
+@mock_aws
+def test_create_simple_instance_group():
+    region = "us-east-1"
+    cf = boto3.client("cloudformation", region_name=region)
+    emr = boto3.client("emr", region_name=region)
+    cf.create_stack(
+        StackName="teststack",
+        TemplateBody=json.dumps(template_with_simple_instance_group_config),
+    )
+
+    # Verify resources
+    res = cf.describe_stack_resources(StackName="teststack")["StackResources"][0]
+    cluster_id = res["PhysicalResourceId"]
+
+    ig = emr.list_instance_groups(ClusterId=cluster_id)["InstanceGroups"][0]
+    assert ig["Name"] == "cfnTask2"
+    assert ig["Market"] == "ON_DEMAND"
+    assert ig["InstanceGroupType"] == "TASK"
+    assert ig["InstanceType"] == "m3.xlarge"
+
+
+template_with_advanced_instance_group_config = {
+    "Resources": {
+        "Cluster1": {
+            "Type": "AWS::EMR::Cluster",
+            "Properties": {
+                "Instances": {
+                    "CoreInstanceGroup": {
+                        "InstanceCount": 3,
+                        "InstanceType": "m3g",
+                    }
+                },
+                "JobFlowRole": "EMR_EC2_DefaultRole",
+                "Name": "my cluster",
+                "ServiceRole": "EMR_DefaultRole",
+            },
+        },
+        "TestInstanceGroupConfig": {
+            "Type": "AWS::EMR::InstanceGroupConfig",
+            "Properties": {
+                "InstanceCount": 1,
+                "InstanceType": "m4.large",
+                "InstanceRole": "TASK",
+                "Market": "ON_DEMAND",
+                "Name": "cfnTask3",
+                "JobFlowId": {"Ref": "Cluster1"},
+                "EbsConfiguration": {
+                    "EbsOptimized": True,
+                    "EbsBlockDeviceConfigs": [
+                        {
+                            "VolumesPerInstance": 2,
+                            "VolumeSpecification": {
+                                "Iops": 10,
+                                "SizeInGB": 50,
+                                "Throughput": 100,
+                                "VolumeType": "gp3",
+                            },
+                        }
+                    ],
+                },
+                "AutoScalingPolicy": {
+                    "Constraints": {"MinCapacity": 1, "MaxCapacity": 4},
+                    "Rules": [
+                        {
+                            "Name": "Scale-out",
+                            "Description": "Scale-out policy",
+                            "Action": {
+                                "SimpleScalingPolicyConfiguration": {
+                                    "AdjustmentType": "CHANGE_IN_CAPACITY",
+                                    "ScalingAdjustment": 1,
+                                    "CoolDown": 300,
+                                }
+                            },
+                            "Trigger": {
+                                "CloudWatchAlarmDefinition": {
+                                    "Dimensions": [
+                                        {
+                                            "Key": "JobFlowId",
+                                            "Value": "${emr.clusterId}",
+                                        }
+                                    ],
+                                    "EvaluationPeriods": 1,
+                                    "Namespace": "AWS/ElasticMapReduce",
+                                    "Period": 300,
+                                    "ComparisonOperator": "LESS_THAN",
+                                    "Statistic": "AVERAGE",
+                                    "Threshold": 15,
+                                    "Unit": "PERCENT",
+                                    "MetricName": "YARNMemoryAvailablePercentage",
+                                }
+                            },
+                        },
+                        {
+                            "Name": "Scale-in",
+                            "Description": "Scale-in policy",
+                            "Action": {
+                                "SimpleScalingPolicyConfiguration": {
+                                    "AdjustmentType": "CHANGE_IN_CAPACITY",
+                                    "ScalingAdjustment": -1,
+                                    "CoolDown": 300,
+                                }
+                            },
+                            "Trigger": {
+                                "CloudWatchAlarmDefinition": {
+                                    "Dimensions": [
+                                        {
+                                            "Key": "JobFlowId",
+                                            "Value": "${emr.clusterId}",
+                                        }
+                                    ],
+                                    "EvaluationPeriods": 1,
+                                    "Namespace": "AWS/ElasticMapReduce",
+                                    "Period": 300,
+                                    "ComparisonOperator": "GREATER_THAN",
+                                    "Statistic": "AVERAGE",
+                                    "Threshold": 75,
+                                    "Unit": "PERCENT",
+                                    "MetricName": "YARNMemoryAvailablePercentage",
+                                }
+                            },
+                        },
+                    ],
+                },
+            },
+        },
+    },
+}
+
+
+@mock_aws
+def test_create_advanced_instance_group():
+    region = "us-east-1"
+    cf = boto3.client("cloudformation", region_name=region)
+    emr = boto3.client("emr", region_name=region)
+    cf.create_stack(
+        StackName="teststack",
+        TemplateBody=json.dumps(template_with_advanced_instance_group_config),
+    )
+
+    # Verify resources
+    res = cf.describe_stack_resources(StackName="teststack")["StackResources"][0]
+    cluster_id = res["PhysicalResourceId"]
+
+    ig = emr.list_instance_groups(ClusterId=cluster_id)["InstanceGroups"][0]
+    assert ig["Name"] == "cfnTask3"
+    assert ig["Market"] == "ON_DEMAND"
+    assert ig["InstanceGroupType"] == "TASK"
+    assert ig["InstanceType"] == "m4.large"
+
+    as_policy = ig["AutoScalingPolicy"]
+    assert as_policy["Status"] == {"State": "ATTACHED"}
+    assert as_policy["Constraints"] == {"MinCapacity": 1, "MaxCapacity": 4}
+
+    ebs = ig["EbsBlockDevices"]
+    assert ebs[0]["VolumeSpecification"] == {
+        "VolumeType": "gp3",
+        "Iops": 10,
+        "SizeInGB": 50,
     }

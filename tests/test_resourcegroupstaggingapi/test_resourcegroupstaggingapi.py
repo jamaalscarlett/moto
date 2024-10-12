@@ -1,15 +1,17 @@
 import json
 
 import boto3
+import pytest
 from botocore.client import ClientError
 
 from moto import mock_aws
+from moto.core import DEFAULT_ACCOUNT_ID as ACCOUNT_ID
 from tests import EXAMPLE_AMI_ID, EXAMPLE_AMI_ID2
+from tests.test_ds.test_ds_simple_ad_directory import create_test_directory
 
 
 @mock_aws
 def test_get_resources_cloudformation():
-
     template = {
         "AWSTemplateFormatVersion": "2010-09-09",
         "Resources": {"test": {"Type": "AWS::S3::Bucket"}},
@@ -134,7 +136,6 @@ def test_get_resources_backup():
 
 @mock_aws
 def test_get_resources_ecs():
-
     # ecs:cluster
     client = boto3.client("ecs", region_name="us-east-1")
     cluster_one = (
@@ -330,22 +331,34 @@ def test_get_resources_ec2():
 
 @mock_aws
 def test_get_resources_ec2_vpc():
-    ec2 = boto3.resource("ec2", region_name="us-west-1")
+    ec2 = boto3.resource("ec2", region_name="us-west-2")
     vpc = ec2.create_vpc(CidrBlock="10.0.0.0/16")
-    ec2.create_tags(Resources=[vpc.id], Tags=[{"Key": "test", "Value": "test"}])
+    ec2.create_tags(Resources=[vpc.id], Tags=[{"Key": "test", "Value": "test_vpc"}])
+    subnet = ec2.create_subnet(VpcId=vpc.id, CidrBlock="10.0.1.0/24")
+    ec2.create_tags(
+        Resources=[subnet.id], Tags=[{"Key": "test", "Value": "test_subnet"}]
+    )
 
-    def assert_response(resp):
-        results = resp.get("ResourceTagMappingList", [])
-        assert len(results) == 1
-        assert vpc.id in results[0]["ResourceARN"]
-
-    rtapi = boto3.client("resourcegroupstaggingapi", region_name="us-west-1")
+    rtapi = boto3.client("resourcegroupstaggingapi", region_name="us-west-2")
+    # Check that we have one entry for VPC, one for the subnet
     resp = rtapi.get_resources(ResourceTypeFilters=["ec2"])
-    assert_response(resp)
+    assert len(resp["ResourceTagMappingList"]) == 2
+
+    # 1 Entry for VPC
     resp = rtapi.get_resources(ResourceTypeFilters=["ec2:vpc"])
-    assert_response(resp)
-    resp = rtapi.get_resources(TagFilters=[{"Key": "test", "Values": ["test"]}])
-    assert_response(resp)
+    assert len(resp["ResourceTagMappingList"]) == 1
+    assert "vpc/" in resp["ResourceTagMappingList"][0]["ResourceARN"]
+    resp = rtapi.get_resources(TagFilters=[{"Key": "test", "Values": ["test_vpc"]}])
+    assert len(resp["ResourceTagMappingList"]) == 1
+    assert "vpc/" in resp["ResourceTagMappingList"][0]["ResourceARN"]
+
+    # 1 Entry for Subnet
+    resp = rtapi.get_resources(ResourceTypeFilters=["ec2:subnet"])
+    assert len(resp["ResourceTagMappingList"]) == 1
+    assert "subnet/" in resp["ResourceTagMappingList"][0]["ResourceARN"]
+    resp = rtapi.get_resources(TagFilters=[{"Key": "test", "Values": ["test_subnet"]}])
+    assert len(resp["ResourceTagMappingList"]) == 1
+    assert "subnet/" in resp["ResourceTagMappingList"][0]["ResourceARN"]
 
 
 @mock_aws
@@ -535,8 +548,9 @@ def test_get_resources_target_group():
     assert {"Key": "Test", "Value": "1"} in resp["ResourceTagMappingList"][0]["Tags"]
 
 
+@pytest.mark.parametrize("resource_type", ["s3", "s3:bucket"])
 @mock_aws
-def test_get_resources_s3():
+def test_get_resources_s3(resource_type):
     # Tests pagination
     s3_client = boto3.client("s3", region_name="eu-central-1")
 
@@ -557,14 +571,16 @@ def test_get_resources_s3():
         response_keys.add("key" + i_str)
 
     rtapi = boto3.client("resourcegroupstaggingapi", region_name="eu-central-1")
-    resp = rtapi.get_resources(ResourcesPerPage=2)
+    resp = rtapi.get_resources(ResourcesPerPage=2, ResourceTypeFilters=[resource_type])
     for resource in resp["ResourceTagMappingList"]:
         response_keys.remove(resource["Tags"][0]["Key"])
 
     assert len(response_keys) == 2
 
     resp = rtapi.get_resources(
-        ResourcesPerPage=2, PaginationToken=resp["PaginationToken"]
+        ResourcesPerPage=2,
+        PaginationToken=resp["PaginationToken"],
+        ResourceTypeFilters=[resource_type],
     )
     for resource in resp["ResourceTagMappingList"]:
         response_keys.remove(resource["Tags"][0]["Key"])
@@ -705,6 +721,9 @@ def test_get_resources_lambda():
     resp = rtapi.get_resources(ResourceTypeFilters=["lambda"])
     assert_response(resp, [circle_arn, rectangle_arn])
 
+    resp = rtapi.get_resources(ResourceTypeFilters=["lambda:function"])
+    assert_response(resp, [circle_arn, rectangle_arn])
+
     resp = rtapi.get_resources(TagFilters=[{"Key": "Color", "Values": ["green"]}])
     assert_response(resp, [circle_arn, rectangle_arn])
 
@@ -745,6 +764,131 @@ def test_get_resources_sqs():
     assert {"Key": "Test", "Value": "1"} in resp["ResourceTagMappingList"][0]["Tags"]
 
 
+def create_directory():
+    ec2_client = boto3.client("ec2", region_name="eu-central-1")
+    ds_client = boto3.client("ds", region_name="eu-central-1")
+    directory_id = create_test_directory(ds_client, ec2_client)
+    return directory_id
+
+
+@mock_aws
+def test_get_resources_workspaces():
+    workspaces = boto3.client("workspaces", region_name="eu-central-1")
+
+    # Create two tagged Workspaces
+    directory_id = create_directory()
+    workspaces.register_workspace_directory(
+        DirectoryId=directory_id, EnableWorkDocs=False
+    )
+    workspaces.create_workspaces(
+        Workspaces=[
+            {
+                "DirectoryId": directory_id,
+                "UserName": "Administrator",
+                "BundleId": "wsb-bh8rsxt14",
+                "Tags": [
+                    {"Key": "Test", "Value": "1"},
+                ],
+            },
+            {
+                "DirectoryId": directory_id,
+                "UserName": "Administrator",
+                "BundleId": "wsb-bh8rsxt14",
+                "Tags": [
+                    {"Key": "Test", "Value": "2"},
+                ],
+            },
+        ]
+    )
+
+    rtapi = boto3.client("resourcegroupstaggingapi", region_name="eu-central-1")
+
+    # Basic test
+    resp = rtapi.get_resources(ResourceTypeFilters=["workspaces"])
+    assert len(resp["ResourceTagMappingList"]) == 2
+
+    # Test tag filtering
+    resp = rtapi.get_resources(
+        ResourceTypeFilters=["workspaces"],
+        TagFilters=[{"Key": "Test", "Values": ["1"]}],
+    )
+    assert len(resp["ResourceTagMappingList"]) == 1
+    assert {"Key": "Test", "Value": "1"} in resp["ResourceTagMappingList"][0]["Tags"]
+
+
+@mock_aws
+def test_get_resources_workspace_directories():
+    workspaces = boto3.client("workspaces", region_name="eu-central-1")
+
+    # Create two tagged Workspaces Directories
+    for i in range(1, 3):
+        i_str = str(i)
+        directory_id = create_directory()
+        workspaces.register_workspace_directory(
+            DirectoryId=directory_id,
+            EnableWorkDocs=False,
+            Tags=[
+                {"Key": "Test", "Value": i_str},
+            ],
+        )
+
+    rtapi = boto3.client("resourcegroupstaggingapi", region_name="eu-central-1")
+
+    # Basic test
+    resp = rtapi.get_resources(ResourceTypeFilters=["workspaces-directory"])
+    assert len(resp["ResourceTagMappingList"]) == 2
+
+    # Test tag filtering
+    resp = rtapi.get_resources(
+        ResourceTypeFilters=["workspaces-directory"],
+        TagFilters=[{"Key": "Test", "Values": ["1"]}],
+    )
+    assert len(resp["ResourceTagMappingList"]) == 1
+    assert {"Key": "Test", "Value": "1"} in resp["ResourceTagMappingList"][0]["Tags"]
+
+
+@mock_aws
+def test_get_resources_workspace_images():
+    workspaces = boto3.client("workspaces", region_name="eu-central-1")
+
+    # Create two tagged Workspace Images
+    directory_id = create_directory()
+    workspaces.register_workspace_directory(
+        DirectoryId=directory_id, EnableWorkDocs=False
+    )
+    resp = workspaces.create_workspaces(
+        Workspaces=[
+            {
+                "DirectoryId": directory_id,
+                "UserName": "Administrator",
+                "BundleId": "wsb-bh8rsxt14",
+            },
+        ]
+    )
+    workspace_id = resp["PendingRequests"][0]["WorkspaceId"]
+    for i in range(1, 3):
+        i_str = str(i)
+        _ = workspaces.create_workspace_image(
+            Name=f"test-image-{i_str}",
+            Description="Test workspace image",
+            WorkspaceId=workspace_id,
+            Tags=[{"Key": "Test", "Value": i_str}],
+        )
+    rtapi = boto3.client("resourcegroupstaggingapi", region_name="eu-central-1")
+
+    # Basic test
+    resp = rtapi.get_resources(ResourceTypeFilters=["workspaces-image"])
+    assert len(resp["ResourceTagMappingList"]) == 2
+
+    # Test tag filtering
+    resp = rtapi.get_resources(
+        ResourceTypeFilters=["workspaces-image"],
+        TagFilters=[{"Key": "Test", "Values": ["1"]}],
+    )
+    assert len(resp["ResourceTagMappingList"]) == 1
+    assert {"Key": "Test", "Value": "1"} in resp["ResourceTagMappingList"][0]["Tags"]
+
+
 @mock_aws
 def test_get_resources_sns():
     sns = boto3.client("sns", region_name="us-east-1")
@@ -758,6 +902,33 @@ def test_get_resources_sns():
     assert {"Key": "Shape", "Value": "Square"} in resp["ResourceTagMappingList"][0][
         "Tags"
     ]
+
+
+@mock_aws
+def test_get_resources_ssm():
+    import yaml
+
+    from tests.test_ssm.test_ssm_docs import _get_yaml_template
+
+    template_file = _get_yaml_template()
+    json_doc = yaml.safe_load(template_file)
+
+    ssm = boto3.client("ssm", region_name="us-east-1")
+    ssm.create_document(
+        Content=json.dumps(json_doc),
+        Name="TestDocument",
+        DocumentType="Command",
+        DocumentFormat="JSON",
+        Tags=[{"Key": "testing", "Value": "testingValue"}],
+    )
+
+    rtapi = boto3.client("resourcegroupstaggingapi", region_name="us-east-1")
+    resp = rtapi.get_resources(ResourceTypeFilters=["ssm"])
+
+    assert len(resp["ResourceTagMappingList"]) == 1
+    assert {"Key": "testing", "Value": "testingValue"} in resp[
+        "ResourceTagMappingList"
+    ][0]["Tags"]
 
 
 @mock_aws
@@ -822,3 +993,213 @@ def test_get_resources_elb():
         f"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/{lb_name}"
         == resources_burger_filter["ResourceTagMappingList"][0]["ResourceARN"]
     )
+
+
+@mock_aws
+def test_get_resources_sagemaker_cluster():
+    sagemaker = boto3.client("sagemaker", region_name="us-east-1")
+    sagemaker.create_cluster(
+        ClusterName="testcluster",
+        InstanceGroups=[
+            {
+                "InstanceCount": 10,
+                "InstanceGroupName": "testgroup",
+                "InstanceType": "ml.p4d.24xlarge",
+                "LifeCycleConfig": {
+                    "SourceS3Uri": "s3://sagemaker-lifecycleconfig",
+                    "OnCreate": "filename",
+                },
+                "ExecutionRole": "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-TestExecutionRole",
+                "ThreadsPerCore": 2,
+            },
+            {
+                "InstanceCount": 15,
+                "InstanceGroupName": "testgroup2",
+                "InstanceType": "ml.g5.8xlarge",
+                "LifeCycleConfig": {
+                    "SourceS3Uri": "s3://sagemaker-lifecycleconfig2",
+                    "OnCreate": "filename",
+                },
+                "ExecutionRole": "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-TestExecutionRole",
+                "ThreadsPerCore": 1,
+            },
+        ],
+        VpcConfig={
+            "SecurityGroupIds": [
+                "sg-12345678901234567",
+            ],
+            "Subnets": [
+                "subnet-12345678901234567",
+            ],
+        },
+        Tags=[
+            {"Key": "sagemakerkey", "Value": "sagemakervalue"},
+        ],
+    )
+
+    rtapi = boto3.client("resourcegroupstaggingapi", region_name="us-east-1")
+    resp = rtapi.get_resources(ResourceTypeFilters=["sagemaker"])
+
+    assert len(resp["ResourceTagMappingList"]) == 1
+    assert {"Key": "sagemakerkey", "Value": "sagemakervalue"} in resp[
+        "ResourceTagMappingList"
+    ][0]["Tags"]
+
+
+@mock_aws
+def test_get_resources_sagemaker_automljob():
+    sagemaker = boto3.client("sagemaker", region_name="us-east-1")
+    sagemaker.create_auto_ml_job_v2(
+        AutoMLJobName="testautomljob",
+        AutoMLJobInputDataConfig=[
+            {
+                "ChannelType": "training",
+                "ContentType": "ContentType",
+                "CompressionType": "None",
+                "DataSource": {
+                    "S3DataSource": {"S3DataType": "S3Prefix", "S3Uri": "s3://data"}
+                },
+            },
+        ],
+        OutputDataConfig={"KmsKeyId": "kms", "S3OutputPath": "s3://output"},
+        AutoMLProblemTypeConfig={
+            "ImageClassificationJobConfig": {
+                "CompletionCriteria": {
+                    "MaxCandidates": 123,
+                    "MaxRuntimePerTrainingJobInSeconds": 123,
+                    "MaxAutoMLJobRuntimeInSeconds": 123,
+                }
+            },
+        },
+        RoleArn="arn:aws:iam::123456789012:role/FakeRole",
+        Tags=[
+            {"Key": "sagemakerkey", "Value": "sagemakervalue"},
+        ],
+    )
+
+    rtapi = boto3.client("resourcegroupstaggingapi", region_name="us-east-1")
+    resp = rtapi.get_resources(ResourceTypeFilters=["sagemaker"])
+
+    assert len(resp["ResourceTagMappingList"]) == 1
+    assert {"Key": "sagemakerkey", "Value": "sagemakervalue"} in resp[
+        "ResourceTagMappingList"
+    ][0]["Tags"]
+
+
+@mock_aws
+def test_tag_resources_sagemaker():
+    sagemaker = boto3.client("sagemaker", region_name="us-east-1")
+    rtapi = boto3.client("resourcegroupstaggingapi", region_name="us-east-1")
+    resp = sagemaker.create_cluster(
+        ClusterName="testcluster",
+        InstanceGroups=[
+            {
+                "InstanceCount": 10,
+                "InstanceGroupName": "testgroup",
+                "InstanceType": "ml.p4d.24xlarge",
+                "LifeCycleConfig": {
+                    "SourceS3Uri": "s3://sagemaker-lifecycleconfig",
+                    "OnCreate": "filename",
+                },
+                "ExecutionRole": "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-TestExecutionRole",
+                "ThreadsPerCore": 2,
+            },
+        ],
+        Tags=[
+            {"Key": "sagemakerkey", "Value": "sagemakervalue"},
+        ],
+    )
+    rtapi.tag_resources(
+        ResourceARNList=[resp["ClusterArn"]], Tags={"key1": "k", "key2": "v"}
+    )
+
+    assert sagemaker.list_tags(ResourceArn=resp["ClusterArn"])["Tags"] == [
+        {"Key": "sagemakerkey", "Value": "sagemakervalue"},
+        {"Key": "key1", "Value": "k"},
+        {"Key": "key2", "Value": "v"},
+    ]
+
+
+@mock_aws
+def test_get_resources_efs():
+    client = boto3.client("resourcegroupstaggingapi", region_name="us-east-1")
+    efs = boto3.client("efs", region_name="us-east-1")
+    # elasticfilesystem:file-system
+    fs_one = efs.create_file_system(
+        CreationToken="test-token-1", Tags=[{"Key": "tag", "Value": "a tag"}]
+    )
+    fs_two = efs.create_file_system(
+        CreationToken="test-token-2", Tags=[{"Key": "tag", "Value": "b tag"}]
+    )
+    resp = client.get_resources(ResourceTypeFilters=["elasticfilesystem:file-system"])
+    assert len(resp["ResourceTagMappingList"]) == 2
+    resp = client.get_resources(
+        ResourceTypeFilters=["elasticfilesystem:file-system"],
+        TagFilters=[{"Key": "tag", "Values": ["a tag"]}],
+    )
+    assert len(resp["ResourceTagMappingList"]) == 1
+    returned_arns = [i["ResourceARN"] for i in resp["ResourceTagMappingList"]]
+    assert fs_one["FileSystemArn"] in returned_arns
+    assert fs_two["FileSystemArn"] not in returned_arns
+
+    # elasticfilesystem:access-point
+    ap_one = efs.create_access_point(
+        ClientToken="ct-1",
+        FileSystemId=fs_one["FileSystemId"],
+        Tags=[{"Key": "tag", "Value": "a tag"}],
+    )
+    ap_two = efs.create_access_point(
+        ClientToken="ct-2",
+        FileSystemId=fs_two["FileSystemId"],
+        Tags=[{"Key": "tag", "Value": "b tag"}],
+    )
+    resp = client.get_resources(ResourceTypeFilters=["elasticfilesystem:access-point"])
+    assert len(resp["ResourceTagMappingList"]) == 2
+    resp = client.get_resources(
+        ResourceTypeFilters=["elasticfilesystem:access-point"],
+        TagFilters=[{"Key": "tag", "Values": ["a tag"]}],
+    )
+    assert len(resp["ResourceTagMappingList"]) == 1
+    returned_arns = [i["ResourceARN"] for i in resp["ResourceTagMappingList"]]
+    assert ap_one["AccessPointArn"] in returned_arns
+    assert ap_two["AccessPointArn"] not in returned_arns
+
+    resp = client.get_resources(ResourceTypeFilters=["elasticfilesystem"])
+    assert len(resp["ResourceTagMappingList"]) == 4
+    resp = client.get_resources(
+        ResourceTypeFilters=["elasticfilesystem"],
+        TagFilters=[{"Key": "tag", "Values": ["b tag"]}],
+    )
+    assert len(resp["ResourceTagMappingList"]) == 2
+    returned_arns = [i["ResourceARN"] for i in resp["ResourceTagMappingList"]]
+    assert fs_one["FileSystemArn"] not in returned_arns
+    assert fs_two["FileSystemArn"] in returned_arns
+    assert ap_one["AccessPointArn"] not in returned_arns
+    assert ap_two["AccessPointArn"] in returned_arns
+
+
+@mock_aws
+def test_get_resources_stepfunction():
+    simple_definition = (
+        '{"Comment": "An example of the Amazon States Language using a choice state.",'
+        '"StartAt": "DefaultState",'
+        '"States": '
+        '{"DefaultState": {"Type": "Fail","Error": "DefaultStateError","Cause": "No Matches!"}}}'
+    )
+    role_arn = "arn:aws:iam::" + ACCOUNT_ID + ":role/unknown_sf_role"
+
+    client = boto3.client("stepfunctions", region_name="us-east-1")
+    client.create_state_machine(
+        name="name1",
+        definition=str(simple_definition),
+        roleArn=role_arn,
+        tags=[{"key": "Name", "value": "Alice"}],
+    )
+
+    rtapi = boto3.client("resourcegroupstaggingapi", region_name="us-east-1")
+    resp = rtapi.get_resources(ResourceTypeFilters=["states:stateMachine"])
+
+    assert len(resp["ResourceTagMappingList"]) == 1
+    assert {"Key": "Name", "Value": "Alice"} in resp["ResourceTagMappingList"][0][
+        "Tags"
+    ]

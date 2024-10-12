@@ -26,11 +26,11 @@ Here is an example of what this looks like in practice:
     os.environ["MOTO_ACCOUNT_ID"] = "111111111111"
     client.create_bucket(Bucket="bucket-in-account-2")
 
-    assert [b["Name"] for b in client2.list_buckets()["Buckets"]] == ["bucket-in-account-2"]
+    assert [b["Name"] for b in client.list_buckets()["Buckets"]] == ["bucket-in-account-2"]
 
     # Now revert to the default account, by removing the environment variable
     del os.environ["MOTO_ACCOUNT_ID"]
-    assert [b["Name"] for b in client2.list_buckets()["Buckets"]] == ["bucket-default-account"]
+    assert [b["Name"] for b in client.list_buckets()["Buckets"]] == ["bucket-default-account"]
 
 
 
@@ -131,3 +131,8 @@ Things get interesting when assuming a role within a different account.
 
 Because we've assumed a role in a different account, no buckets were found. The `foobar`-bucket only exists in the default account, not in `111111111111`.
 
+.. note::
+
+    Be aware, however, that roles assumed in different accounts through this approach will still have full access to actions
+    on all buckets created, in addition to other AWS permissions. To learn more about simulating access controls, see
+    `IAM-like Access Control <./iam.rst>`_.

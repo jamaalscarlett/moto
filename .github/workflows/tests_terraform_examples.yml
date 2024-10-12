@@ -6,12 +6,29 @@ name: Terraform Examples
 on: [workflow_call]
 
 jobs:
+  find-jobs:
+    runs-on: ubuntu-latest
+    name: Find Jobs
+    outputs:
+      folders: ${{ steps.set-folders.outputs.folders }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set-folders
+        name: Get Services
+        shell: bash
+        run: |
+          cd other_langs/terraform/
+          folders=$(tree -J -d -L 1 | jq -c '.[0].contents | map(.name)')
+          echo $folders
+          echo "folders=$folders" >> $GITHUB_OUTPUT
+
   test:
     runs-on: ubuntu-latest
+    needs: find-jobs
     strategy:
       fail-fast: false
       matrix:
-        service: ["acm", "awslambda", "cloudfront", "elb", "route53", "sqs"]
+        service: ${{ fromJson(needs.find-jobs.outputs.folders )}}
 
     steps:
     - uses: actions/checkout@v4

@@ -53,7 +53,9 @@ class CloudFormationResponse(BaseResponse):
         return cls.dispatch(request=request, full_url=full_url, headers=headers)
 
     def _get_stack_from_s3_url(self, template_url: str) -> str:
-        return get_stack_from_s3_url(template_url, account_id=self.current_account)
+        return get_stack_from_s3_url(
+            template_url, account_id=self.current_account, partition=self.partition
+        )
 
     def _get_params_from_list(
         self, parameters_list: List[Dict[str, Any]]
@@ -374,6 +376,13 @@ class CloudFormationResponse(BaseResponse):
             stack_body = self._get_stack_from_s3_url(template_url)
 
         incoming_params = self._get_list_prefix("Parameters.member")
+        for param in incoming_params:
+            if param.get("use_previous_value") == "true" and param.get(
+                "parameter_value"
+            ):
+                raise ValidationError(
+                    message=f"Invalid input for parameter key {param['parameter_key']}. Cannot specify usePreviousValue as true and non empty value for a parameter"
+                )
         # boto3 is supposed to let you clear the tags by passing an empty value, but the request body doesn't
         # end up containing anything we can use to differentiate between passing an empty value versus not
         # passing anything. so until that changes, moto won't be able to clear tags, only update them.
@@ -538,8 +547,6 @@ class CloudFormationResponse(BaseResponse):
         stackset_name = self._get_param("StackSetName")
         stackset = self.cloudformation_backend.describe_stack_set(stackset_name)
 
-        if not stackset.admin_role:
-            stackset.admin_role = f"arn:aws:iam::{self.current_account}:role/AWSCloudFormationStackSetAdministrationRole"
         if not stackset.execution_role:
             stackset.execution_role = "AWSCloudFormationStackSetExecutionRole"
 
@@ -821,14 +828,20 @@ DESCRIBE_STACKS_TEMPLATE = """<DescribeStacksResponse>
         <NotificationARNs/>
         {% endif %}
         <DisableRollback>false</DisableRollback>
+        {%if stack.stack_outputs %}
         <Outputs>
         {% for output in stack.stack_outputs %}
           <member>
             <OutputKey>{{ output.key }}</OutputKey>
             <OutputValue>{{ output.value }}</OutputValue>
+            {% for export in stack.exports if export.value == output.value %}
+                <ExportName>{{ export.name }}</ExportName>
+            {% endfor %}
+            {% if output.description %}<Description>{{ output.description }}</Description>{% endif %}
           </member>
         {% endfor %}
         </Outputs>
+        {% endif %}
         <Parameters>
         {% for param_name, param_value in stack.stack_parameters.items() %}
           <member>
@@ -1212,7 +1225,7 @@ DESCRIBE_STACKSET_OPERATION_RESPONSE_TEMPLATE = """<DescribeStackSetOperationRes
   <DescribeStackSetOperationResult>
     <StackSetOperation>
       <ExecutionRoleName>{{ stackset.execution_role }}</ExecutionRoleName>
-      <AdministrationRoleARN>{{ stackset.admin_role_arn }}</AdministrationRoleARN>
+      <AdministrationRoleARN>{{ stackset.admin_role }}</AdministrationRoleARN>
       <StackSetId>{{ stackset.id }}</StackSetId>
       <CreationTimestamp>{{ operation.CreationTimestamp }}</CreationTimestamp>
       <OperationId>{{ operation.OperationId }}</OperationId>

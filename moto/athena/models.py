@@ -5,7 +5,10 @@ from typing import Any, Dict, List, Optional
 from moto.core.base_backend import BackendDict, BaseBackend
 from moto.core.common_models import BaseModel
 from moto.moto_api._internal import mock_random
+from moto.s3.models import s3_backends
+from moto.s3.utils import bucket_and_name_from_url
 from moto.utilities.paginator import paginate
+from moto.utilities.utils import get_partition
 
 
 class TaggableResourceMixin:
@@ -22,7 +25,7 @@ class TaggableResourceMixin:
         self.region = region_name
         self.resource_name = resource_name
         self.tags = tags or []
-        self.arn = f"arn:aws:athena:{region_name}:{account_id}:{resource_name}"
+        self.arn = f"arn:{get_partition(region_name)}:athena:{region_name}:{account_id}:{resource_name}"
 
     def create_tags(self, tags: List[Dict[str, str]]) -> List[Dict[str, str]]:
         new_keys = [tag_set["Key"] for tag_set in tags]
@@ -36,7 +39,6 @@ class TaggableResourceMixin:
 
 
 class WorkGroup(TaggableResourceMixin, BaseModel):
-
     resource_type = "workgroup"
     state = "ENABLED"
 
@@ -59,6 +61,20 @@ class WorkGroup(TaggableResourceMixin, BaseModel):
         self.name = name
         self.description = description
         self.configuration = configuration
+
+        if "EnableMinimumEncryptionConfiguration" not in self.configuration:
+            self.configuration["EnableMinimumEncryptionConfiguration"] = False
+        if "EnforceWorkGroupConfiguration" not in self.configuration:
+            self.configuration["EnforceWorkGroupConfiguration"] = True
+        if "EngineVersion" not in self.configuration:
+            self.configuration["EngineVersion"] = {
+                "EffectiveEngineVersion": "Athena engine " "version 3",
+                "SelectedEngineVersion": "AUTO",
+            }
+        if "PublishCloudWatchMetricsEnabled" not in self.configuration:
+            self.configuration["PublishCloudWatchMetricsEnabled"] = False
+        if "RequesterPaysEnabled" not in self.configuration:
+            self.configuration["RequesterPaysEnabled"] = False
 
 
 class DataCatalog(TaggableResourceMixin, BaseModel):
@@ -86,14 +102,27 @@ class DataCatalog(TaggableResourceMixin, BaseModel):
 
 
 class Execution(BaseModel):
-    def __init__(self, query: str, context: str, config: str, workgroup: WorkGroup):
+    def __init__(
+        self,
+        query: str,
+        context: str,
+        config: Dict[str, Any],
+        workgroup: WorkGroup,
+        execution_parameters: Optional[List[str]],
+    ):
         self.id = str(mock_random.uuid4())
         self.query = query
         self.context = context
         self.config = config
         self.workgroup = workgroup
+        self.execution_parameters = execution_parameters
         self.start_time = time.time()
         self.status = "SUCCEEDED"
+
+        if self.config is not None and "OutputLocation" in self.config:
+            if not self.config["OutputLocation"].endswith("/"):
+                self.config["OutputLocation"] += "/"
+            self.config["OutputLocation"] += f"{self.id}.csv"
 
 
 class QueryResults(BaseModel):
@@ -164,16 +193,13 @@ class AthenaBackend(BaseBackend):
 
         # Initialise with the primary workgroup
         self.create_work_group(
-            name="primary", description="", configuration=dict(), tags=[]
-        )
-
-    @staticmethod
-    def default_vpc_endpoint_service(
-        service_region: str, zones: List[str]
-    ) -> List[Dict[str, str]]:
-        """Default VPC endpoint service."""
-        return BaseBackend.default_vpc_endpoint_service_factory(
-            service_region, zones, "athena"
+            name="primary",
+            description="",
+            configuration={
+                "ResultConfiguration": {},
+                "EnforceWorkGroupConfiguration": False,
+            },
+            tags=[],
         )
 
     def create_work_group(
@@ -212,14 +238,35 @@ class AthenaBackend(BaseBackend):
             "CreationTime": time.time(),
         }
 
+    def delete_work_group(self, name: str) -> None:
+        self.work_groups.pop(name, None)
+
     def start_query_execution(
-        self, query: str, context: str, config: str, workgroup: WorkGroup
+        self,
+        query: str,
+        context: str,
+        config: Dict[str, Any],
+        workgroup: WorkGroup,
+        execution_parameters: Optional[List[str]],
     ) -> str:
         execution = Execution(
-            query=query, context=context, config=config, workgroup=workgroup
+            query=query,
+            context=context,
+            config=config,
+            workgroup=workgroup,
+            execution_parameters=execution_parameters,
         )
         self.executions[execution.id] = execution
+
+        self._store_predefined_query_results(execution.id)
+
         return execution.id
+
+    def _store_predefined_query_results(self, exec_id: str) -> None:
+        if exec_id not in self.query_results and self.query_results_queue:
+            self.query_results[exec_id] = self.query_results_queue.pop(0)
+
+            self._store_query_result_in_s3(exec_id)
 
     def get_query_execution(self, exec_id: str) -> Execution:
         return self.executions[exec_id]
@@ -262,7 +309,7 @@ class AthenaBackend(BaseBackend):
                 ],
             }
             resp = requests.post(
-                "http://motoapi.amazonaws.com:5000/moto-api/static/athena/query-results",
+                "http://motoapi.amazonaws.com/moto-api/static/athena/query-results",
                 json=expected_results,
             )
             assert resp.status_code == 201
@@ -272,15 +319,42 @@ class AthenaBackend(BaseBackend):
 
         .. note:: The exact QueryExecutionId is not relevant here, but will likely be whatever value is returned by start_query_execution
 
+        Query results will also be stored in the S3 output location (in CSV format).
+
         """
-        if exec_id not in self.query_results and self.query_results_queue:
-            self.query_results[exec_id] = self.query_results_queue.pop(0)
+        self._store_predefined_query_results(exec_id)
+
         results = (
             self.query_results[exec_id]
             if exec_id in self.query_results
             else QueryResults(rows=[], column_info=[])
         )
         return results
+
+    def _store_query_result_in_s3(self, exec_id: str) -> None:
+        try:
+            output_location = self.executions[exec_id].config["OutputLocation"]
+            bucket, key = bucket_and_name_from_url(output_location)
+
+            query_result = ""
+            for row in self.query_results[exec_id].rows:
+                query_result += ",".join(
+                    [
+                        f"\"{r['VarCharValue']}\"" if "VarCharValue" in r else ""
+                        for r in row["Data"]
+                    ]
+                )
+                query_result += "\n"
+
+            s3_backends[self.account_id][self.partition].put_object(
+                bucket_name=bucket,  # type: ignore
+                key_name=key,  # type: ignore
+                value=query_result.encode("utf-8"),
+            )
+        except:  # noqa
+            # Execution may not exist
+            # OutputLocation may not exist
+            pass
 
     def stop_query_execution(self, exec_id: str) -> None:
         execution = self.executions[exec_id]

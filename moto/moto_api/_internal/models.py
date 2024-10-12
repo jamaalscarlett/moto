@@ -54,6 +54,22 @@ class MotoAPIBackend(BaseBackend):
         backend = ce_backends[account_id]["global"]
         backend.cost_usage_results_queue.append(result)
 
+    def set_lambda_simple_result(
+        self, result: str, account_id: str, region: str
+    ) -> None:
+        from moto.awslambda_simple.models import lambda_simple_backends
+
+        backend = lambda_simple_backends[account_id][region]
+        backend.lambda_simple_results_queue.append(result)
+
+    def set_resilience_result(
+        self, result: List[Dict[str, Any]], account_id: str, region: str
+    ) -> None:
+        from moto.resiliencehub.models import resiliencehub_backends
+
+        backend = resiliencehub_backends[account_id][region]
+        backend.app_assessments_queue.append(result)
+
     def set_sagemaker_result(
         self,
         body: str,
@@ -67,6 +83,18 @@ class MotoAPIBackend(BaseBackend):
 
         backend = sagemakerruntime_backends[account_id][region]
         backend.results_queue.append((body, content_type, prod_variant, custom_attrs))
+
+    def set_sagemaker_async_result(
+        self,
+        is_failure: bool,
+        data: str,
+        account_id: str,
+        region: str,
+    ) -> None:
+        from moto.sagemakerruntime.models import sagemakerruntime_backends
+
+        backend = sagemakerruntime_backends[account_id][region]
+        backend.async_results_queue.append((is_failure, data))
 
     def set_rds_data_result(
         self,
@@ -102,6 +130,23 @@ class MotoAPIBackend(BaseBackend):
         backend = inspector2_backends[account_id][region]
         backend.findings_queue.append(results)
 
+    def set_timestream_result(
+        self,
+        query: Optional[str],
+        query_results: List[Dict[str, Any]],
+        account_id: str,
+        region: str,
+    ) -> None:
+        from moto.timestreamquery.models import (
+            TimestreamQueryBackend,
+            timestreamquery_backends,
+        )
+
+        backend: TimestreamQueryBackend = timestreamquery_backends[account_id][region]
+        if query not in backend.query_result_queue:
+            backend.query_result_queue[query] = []
+        backend.query_result_queue[query].extend(query_results)
+
     def get_proxy_passthrough(self) -> Tuple[Set[str], Set[str]]:
         return self.proxy_urls_to_passthrough, self.proxy_hosts_to_passthrough
 
@@ -128,6 +173,8 @@ class MotoAPIBackend(BaseBackend):
             default_user_config["batch"] = config["batch"]
         if "lambda" in config:
             default_user_config["lambda"] = config["lambda"]
+        if "stepfunctions" in config:
+            default_user_config["stepfunctions"] = config["stepfunctions"]
 
 
 moto_api_backend = MotoAPIBackend(region_name="global", account_id=DEFAULT_ACCOUNT_ID)

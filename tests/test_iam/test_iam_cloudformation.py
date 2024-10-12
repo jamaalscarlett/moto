@@ -1,4 +1,5 @@
 import json
+from uuid import uuid4
 
 import boto3
 import pytest
@@ -8,6 +9,8 @@ from botocore.exceptions import ClientError
 from moto import mock_aws
 from moto.core import DEFAULT_ACCOUNT_ID as ACCOUNT_ID
 from tests import EXAMPLE_AMI_ID
+from tests.test_iam import iam_aws_verified
+from tests.test_iam.test_iam import MOCK_STS_EC2_POLICY_DOCUMENT
 
 TEMPLATE_MINIMAL_ROLE = """
 AWSTemplateFormatVersion: 2010-09-09
@@ -24,6 +27,13 @@ Resources:
               - ec2.amazonaws.com
             Action:
               - 'sts:AssumeRole'
+Outputs:
+  RootRole:
+    Value: !Ref RootRole
+  RoleARN:
+    Value: {"Fn::GetAtt": ["RootRole", "Arn"]}
+  RoleID:
+    Value: {"Fn::GetAtt": ["RootRole", "RoleId"]}
 """
 
 
@@ -75,9 +85,7 @@ Resources:
     Type: AWS::IAM::User
     Properties:
       UserName: {0}
-""".strip().format(
-        user_name
-    )
+""".strip().format(user_name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -117,9 +125,7 @@ Resources:
     Type: AWS::IAM::User
     Properties:
       Path: {0}
-""".strip().format(
-        path
-    )
+""".strip().format(path)
 
     cf_client.update_stack(StackName=stack_name, TemplateBody=template)
 
@@ -156,9 +162,7 @@ Resources:
     Type: AWS::IAM::User
     Properties:
       UserName: {0}
-""".strip().format(
-        new_user_name
-    )
+""".strip().format(new_user_name)
 
     cf_client.update_stack(StackName=stack_name, TemplateBody=template)
 
@@ -243,9 +247,7 @@ Resources:
     Type: AWS::IAM::User
     Properties:
       UserName: {}
-""".strip().format(
-        user_name
-    )
+""".strip().format(user_name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -306,9 +308,7 @@ Outputs:
     Value: !Ref TheUser
   UserArn:
     Value: !GetAtt TheUser.Arn
-""".strip().format(
-        user_name
-    )
+""".strip().format(user_name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
     stack_description = cf_client.describe_stacks(StackName=stack_name)["Stacks"][0]
@@ -394,9 +394,7 @@ Resources:
         - Effect: Allow
           Action: s3:*
           Resource: '*'
-""".strip().format(
-        desc, name
-    )
+""".strip().format(desc, name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -441,9 +439,7 @@ Resources:
           Resource: '*'
       Groups:
         - {1}
-""".strip().format(
-        desc, group_name
-    )
+""".strip().format(desc, group_name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -489,9 +485,7 @@ Resources:
           Resource: '*'
       Users:
         - {1}
-""".strip().format(
-        desc, user_name
-    )
+""".strip().format(desc, user_name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -537,9 +531,7 @@ Resources:
           Resource: '*'
       Roles:
         - {1}
-""".strip().format(
-        desc, role_name
-    )
+""".strip().format(desc, role_name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -590,9 +582,7 @@ Resources:
           Resource: {1}
       Users:
         - {2}
-""".strip().format(
-        policy_name, bucket_arn, user_name
-    )
+""".strip().format(policy_name, bucket_arn, user_name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -640,9 +630,7 @@ Resources:
           Resource: {1}
       Users:
         - {2}
-""".strip().format(
-        policy_name, bucket_arn, user_name_1
-    )
+""".strip().format(policy_name, bucket_arn, user_name_1)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -673,9 +661,7 @@ Resources:
           Resource: {1}
       Users:
         - {2}
-""".strip().format(
-        policy_name, bucket_arn, user_name_2
-    )
+""".strip().format(policy_name, bucket_arn, user_name_2)
 
     cf_client.update_stack(StackName=stack_name, TemplateBody=template)
 
@@ -724,9 +710,7 @@ Resources:
           Resource: {0}
       Users:
         - {1}
-""".strip().format(
-        bucket_arn, user_name
-    )
+""".strip().format(bucket_arn, user_name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -776,9 +760,7 @@ Resources:
           Resource: {1}
       Roles:
         - {2}
-""".strip().format(
-        policy_name, bucket_arn, role_name
-    )
+""".strip().format(policy_name, bucket_arn, role_name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -826,9 +808,7 @@ Resources:
           Resource: {1}
       Roles:
         - {2}
-""".strip().format(
-        policy_name, bucket_arn, role_name_1
-    )
+""".strip().format(policy_name, bucket_arn, role_name_1)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -859,9 +839,7 @@ Resources:
           Resource: {1}
       Roles:
         - {2}
-""".strip().format(
-        policy_name, bucket_arn, role_name_2
-    )
+""".strip().format(policy_name, bucket_arn, role_name_2)
 
     cf_client.update_stack(StackName=stack_name, TemplateBody=template)
 
@@ -910,9 +888,7 @@ Resources:
           Resource: {0}
       Roles:
         - {1}
-""".strip().format(
-        bucket_arn, role_name
-    )
+""".strip().format(bucket_arn, role_name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -963,9 +939,7 @@ Resources:
           Resource: {1}
       Groups:
         - {2}
-""".strip().format(
-        policy_name, bucket_arn, group_name
-    )
+""".strip().format(policy_name, bucket_arn, group_name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -1013,9 +987,7 @@ Resources:
           Resource: {1}
       Groups:
         - {2}
-""".strip().format(
-        policy_name, bucket_arn, group_name_1
-    )
+""".strip().format(policy_name, bucket_arn, group_name_1)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -1046,9 +1018,7 @@ Resources:
           Resource: {1}
       Groups:
         - {2}
-""".strip().format(
-        policy_name, bucket_arn, group_name_2
-    )
+""".strip().format(policy_name, bucket_arn, group_name_2)
 
     cf_client.update_stack(StackName=stack_name, TemplateBody=template)
 
@@ -1098,9 +1068,7 @@ Resources:
           Resource: {0}
       Groups:
         - {1}
-""".strip().format(
-        bucket_arn, group_name
-    )
+""".strip().format(bucket_arn, group_name)
 
     cf_client.create_stack(StackName=stack_name, TemplateBody=template)
 
@@ -1386,9 +1354,7 @@ Resources:
     Type: AWS::IAM::AccessKey
     Properties:
       UserName: {0}
-""".strip().format(
-        other_user_name
-    )
+""".strip().format(other_user_name)
 
     cf_client.update_stack(StackName=stack_name, TemplateBody=template)
 
@@ -1414,8 +1380,16 @@ def test_iam_cloudformation_create_role():
     role = [res for res in resources if res["ResourceType"] == "AWS::IAM::Role"][0]
     assert role["LogicalResourceId"] == "RootRole"
 
+    outputs = cf_client.describe_stacks(StackName=stack_name)["Stacks"][0]["Outputs"]
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in outputs}
+
     iam_client = boto3.client("iam", region_name="us-east-1")
-    assert len(iam_client.list_roles()["Roles"]) == 1
+    roles = iam_client.list_roles()["Roles"]
+    assert len(roles) == 1
+
+    assert roles[0]["RoleName"] == [v for k, v in outputs.items() if k == "RootRole"][0]
+    assert roles[0]["Arn"] == [v for k, v in outputs.items() if k == "RoleARN"][0]
+    assert roles[0]["RoleId"] == [v for k, v in outputs.items() if k == "RoleID"][0]
 
     cf_client.delete_stack(StackName=stack_name)
 
@@ -1609,3 +1583,47 @@ def test_iam_roles():
         if resource["ResourceType"] == "AWS::IAM::Role"
     ]
     assert {r["PhysicalResourceId"] for r in role_resources} == set(role_names)
+
+
+template_with_instance_profile = """
+Parameters:
+    InputRole:
+        Type: String
+        Default: "test-emr-role"
+
+Resources:
+    emrEc2InstanceProfile:
+        Type: 'AWS::IAM::InstanceProfile'
+        Properties:
+            Path: /
+            Roles:
+              - !Ref InputRole
+"""
+
+
+@pytest.mark.aws_verified
+@iam_aws_verified()
+def test_delete_instance_profile_with_existing_role(user_name=None):
+    region = "us-east-1"
+    iam = boto3.client("iam", region_name=region)
+    iam_role_name = f"moto_{str(uuid4())[0:6]}"
+    iam.create_role(
+        RoleName=iam_role_name, AssumeRolePolicyDocument=MOCK_STS_EC2_POLICY_DOCUMENT
+    )
+
+    try:
+        cf = boto3.client("cloudformation", region_name=region)
+        cf.create_stack(
+            StackName="teststack",
+            TemplateBody=template_with_instance_profile,
+            Parameters=[{"ParameterKey": "InputRole", "ParameterValue": iam_role_name}],
+            Capabilities=["CAPABILITY_NAMED_IAM"],
+        )
+
+        # Just verify that we can delete the InstanceProfile
+        cf.delete_stack(StackName="teststack")
+
+        # The role still exists at this point
+        iam.get_role(RoleName=iam_role_name)
+    finally:
+        iam.delete_role(RoleName=iam_role_name)

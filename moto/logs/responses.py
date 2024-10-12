@@ -107,7 +107,7 @@ class LogsResponse(BaseResponse):
             "metricNamespace",
             "Maximum length of 255.",
             lambda x: x is None or len(x) <= 255,
-            pattern="[^:*$]*",
+            pattern="[0-9A-Za-z\\.\\-_/#:]*",
         )
         next_token = self._get_validated_param(
             "nextToken", "Minimum length of 1.", lambda x: x is None or 1 <= len(x)
@@ -431,6 +431,11 @@ class LogsResponse(BaseResponse):
         query_id = self._get_param("queryId")
         query = self.logs_backend.get_query_results(query_id)
         return json.dumps(query.to_result_json())
+
+    def cancel_export_task(self) -> str:
+        task_id = self._get_param("taskId")
+        self.logs_backend.cancel_export_task(task_id)
+        return "{}"
 
     def create_export_task(self) -> str:
         task_id = self.logs_backend.create_export_task(

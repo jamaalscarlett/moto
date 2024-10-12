@@ -43,13 +43,14 @@ def test_create_db_proxy():
         db_proxy["DBProxyArn"]
         == f"arn:aws:rds:us-west-2:{ACCOUNT_ID}:db-proxy:testrdsproxy"
     )
-    assert db_proxy["Status"] == "availible"
+    assert db_proxy["Status"] == "available"
     assert db_proxy["EngineFamily"] == "MYSQL"
     assert db_proxy["VpcId"] == vpc_id
     assert db_proxy["VpcSecurityGroupIds"] == []
     assert db_proxy["VpcSubnetIds"] == [subnet_id, subnet_id_2]
     assert db_proxy["Auth"] == [
         {
+            "Description": "Test Description",
             "UserName": "Test Username",
             "AuthScheme": "SECRETS",
             "SecretArn": "TestSecretARN",
@@ -102,13 +103,14 @@ def test_describe_db_proxies():
         db_proxy["DBProxyArn"]
         == f"arn:aws:rds:us-west-2:{ACCOUNT_ID}:db-proxy:testrdsproxydescribe"
     )
-    assert db_proxy["Status"] == "availible"
+    assert db_proxy["Status"] == "available"
     assert db_proxy["EngineFamily"] == "MYSQL"
     assert db_proxy["VpcId"] == vpc_id
     assert db_proxy["VpcSecurityGroupIds"] == []
     assert db_proxy["VpcSubnetIds"] == [subnet_id, subnet_id_2]
     assert db_proxy["Auth"] == [
         {
+            "Description": "Test Description",
             "UserName": "Test Username",
             "AuthScheme": "SECRETS",
             "SecretArn": "TestSecretARN",

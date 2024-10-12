@@ -14,6 +14,8 @@ from freezegun import freeze_time
 from moto import mock_aws, settings
 from moto.core import DEFAULT_ACCOUNT_ID as ACCOUNT_ID
 
+from . import secretsmanager_aws_verified
+
 DEFAULT_SECRET_NAME = "test-secret7"
 
 
@@ -177,6 +179,127 @@ def test_get_secret_version_stage_mismatch():
     assert (
         "You provided a VersionStage that is not associated to the provided VersionId."
     ) == cm.value.response["Error"]["Message"]
+
+
+@mock_aws
+def test_batch_get_secret_value_for_secret_id_list_with_matches():
+    conn = boto3.client("secretsmanager", region_name="us-west-2")
+
+    secret_a = conn.create_secret(Name="test-secret-a", SecretString="secret")
+    secret_b = conn.create_secret(Name="test-secret-b", SecretString="secret")
+
+    secrets_batch = conn.batch_get_secret_value(
+        SecretIdList=["test-secret-a", "test-secret-b"]
+    )
+    matched = [
+        secret
+        for secret in secrets_batch["SecretValues"]
+        if secret["ARN"] in [secret_a["ARN"], secret_b["ARN"]]
+    ]
+
+    assert len(matched) == len(secrets_batch["SecretValues"]) == 2
+
+
+@mock_aws
+def test_batch_get_secret_value_for_secret_id_list_without_matches():
+    conn = boto3.client("secretsmanager", region_name="us-west-2")
+
+    conn.create_secret(Name="test-secret-a", SecretString="secret")
+
+    secrets_batch = conn.batch_get_secret_value(
+        SecretIdList=["test-secret-b", "test-secret-c"]
+    )
+    assert len(secrets_batch["SecretValues"]) == 0
+
+
+@mock_aws
+def test_batch_get_secret_value_with_filters():
+    conn = boto3.client("secretsmanager", region_name="us-west-2")
+
+    secret_a = conn.create_secret(Name="test-secret-a", SecretString="secret")
+    secret_b = conn.create_secret(Name="test-secret-b", SecretString="secret")
+    conn.create_secret(Name="test-secret-c", SecretString="secret")
+
+    secrets_batch = conn.batch_get_secret_value(
+        Filters=[{"Key": "name", "Values": [secret_a["Name"], secret_b["Name"]]}]
+    )
+
+    assert [sec["ARN"] for sec in secrets_batch["SecretValues"]] == [
+        secret_a["ARN"],
+        secret_b["ARN"],
+    ]
+
+
+@mock_aws
+def test_batch_get_secret_value_with_both_secret_id_list_and_filters():
+    conn = boto3.client("secretsmanager", region_name="us-west-2")
+
+    with pytest.raises(ClientError) as exc:
+        conn.batch_get_secret_value(
+            Filters=[{"Key": "name", "Values": ["test-secret-a", "test-secret-b"]}],
+            SecretIdList=["foo", "bar"],
+        )
+
+    err = exc.value.response["Error"]
+    assert err["Code"] == "InvalidParameterException"
+    assert (
+        "Either 'SecretIdList' or 'Filters' must be provided, but not both."
+        in err["Message"]
+    )
+
+
+@mock_aws
+def test_batch_get_secret_value_with_max_results_and_no_filters():
+    conn = boto3.client("secretsmanager", region_name="us-west-2")
+
+    conn = boto3.client("secretsmanager", region_name="us-west-2")
+    with pytest.raises(ClientError) as exc:
+        conn.batch_get_secret_value(MaxResults=10, SecretIdList=["foo", "bar"])
+
+    err = exc.value.response["Error"]
+    assert err["Code"] == "InvalidParameterException"
+    assert (
+        "'Filters' not specified. 'Filters' must also be specified when 'MaxResults' is provided."
+        in err["Message"]
+    )
+
+
+@mock_aws
+def test_batch_get_secret_value_binary():
+    conn = boto3.client("secretsmanager", region_name="us-west-2")
+
+    secret_a = conn.create_secret(Name="test-secret-a", SecretBinary="secretA")
+    secret_b = conn.create_secret(Name="test-secret-b", SecretBinary="secretB")
+    conn.create_secret(Name="test-secret-c", SecretBinary="secretC")
+
+    secrets_batch = conn.batch_get_secret_value(
+        Filters=[{"Key": "name", "Values": [secret_a["Name"], secret_b["Name"]]}]
+    )
+    matched = [
+        secret
+        for secret in secrets_batch["SecretValues"]
+        if secret["ARN"] == secret_a["ARN"]
+        and secret["SecretBinary"] == b"secretA"
+        or secret["ARN"] == secret_b["ARN"]
+        and secret["SecretBinary"] == b"secretB"
+    ]
+    assert len(matched) == 2
+
+
+@mock_aws
+def test_batch_get_secret_value_missing_value():
+    conn = boto3.client("secretsmanager", region_name="us-east-2")
+
+    secret_a = conn.create_secret(Name="test-secret-a")
+    secret_b = conn.create_secret(Name="test-secret-b")
+
+    with pytest.raises(ClientError) as exc:
+        conn.batch_get_secret_value(
+            Filters=[{"Key": "name", "Values": [secret_a["Name"], secret_b["Name"]]}]
+        )
+
+    err = exc.value.response["Error"]
+    assert err["Code"] == "ResourceNotFoundException"
 
 
 @mock_aws
@@ -506,6 +629,17 @@ def test_delete_secret_that_is_marked_deleted():
 
 
 @mock_aws
+def test_force_delete_secret_that_is_marked_deleted():
+    conn = boto3.client("secretsmanager", region_name="us-west-2")
+
+    conn.create_secret(Name="test-secret", SecretString="foosecret")
+
+    conn.delete_secret(SecretId="test-secret")
+
+    conn.delete_secret(SecretId="test-secret", ForceDeleteWithoutRecovery=True)
+
+
+@mock_aws
 def test_get_random_password_default_length():
     conn = boto3.client("secretsmanager", region_name="us-west-2")
 
@@ -685,8 +819,9 @@ def test_describe_secret_with_KmsKeyId():
     secret_description = conn.describe_secret(SecretId=results["ARN"])
 
     assert secret_description["KmsKeyId"] == "dummy_arn"
-    assert conn.list_secrets()["SecretList"][0]["KmsKeyId"] == (
-        secret_description["KmsKeyId"]
+    assert (
+        conn.list_secrets()["SecretList"][0]["KmsKeyId"]
+        == (secret_description["KmsKeyId"])
     )
 
 
@@ -1619,6 +1754,10 @@ def test_tag_resource(pass_arn):
     conn = boto3.client("secretsmanager", region_name="us-west-2")
     created_secret = conn.create_secret(Name="test-secret", SecretString="foosecret")
     secret_id = created_secret["ARN"] if pass_arn else "test-secret"
+
+    response = conn.describe_secret(SecretId=secret_id)
+    assert "Tags" not in response
+
     conn.tag_resource(
         SecretId=secret_id, Tags=[{"Key": "FirstTag", "Value": "SomeValue"}]
     )
@@ -1674,6 +1813,14 @@ def test_untag_resource(pass_arn):
         "Secrets Manager can't find the specified secret."
         == cm.value.response["Error"]["Message"]
     )
+
+    conn.tag_resource(
+        SecretId=secret_id, Tags=[{"Key": "FirstTag", "Value": "SomeValue"}]
+    )
+    conn.untag_resource(SecretId=secret_id, TagKeys=["FirstTag", "SecondTag"])
+    response = conn.describe_secret(SecretId=secret_id)
+    assert "Tags" in response
+    assert response["Tags"] == []
 
 
 @mock_aws
@@ -1733,3 +1880,84 @@ def test_update_secret_with_client_request_token():
         assert pve.value.response["Error"]["Message"] == (
             "ClientRequestToken must be 32-64 characters long."
         )
+
+
+@secretsmanager_aws_verified
+@pytest.mark.aws_verified
+def test_update_secret_version_stage_manually(secret_arn=None):
+    sm_client = boto3.client("secretsmanager", "us-east-1")
+    current_version = sm_client.put_secret_value(
+        SecretId=secret_arn,
+        SecretString="previous_secret",
+        VersionStages=["AWSCURRENT"],
+    )["VersionId"]
+
+    initial_secret = sm_client.get_secret_value(
+        SecretId=secret_arn, VersionStage="AWSCURRENT"
+    )
+    assert initial_secret["VersionStages"] == ["AWSCURRENT"]
+    assert initial_secret["SecretString"] == "previous_secret"
+
+    token = str(uuid4())
+    sm_client.put_secret_value(
+        SecretId=secret_arn,
+        ClientRequestToken=token,
+        SecretString="new_secret",
+        VersionStages=["AWSPENDING"],
+    )
+
+    pending_secret = sm_client.get_secret_value(
+        SecretId=secret_arn, VersionStage="AWSPENDING"
+    )
+    assert pending_secret["VersionStages"] == ["AWSPENDING"]
+    assert pending_secret["SecretString"] == "new_secret"
+
+    sm_client.update_secret_version_stage(
+        SecretId=secret_arn,
+        VersionStage="AWSCURRENT",
+        MoveToVersionId=token,
+        RemoveFromVersionId=current_version,
+    )
+
+    current_secret = sm_client.get_secret_value(
+        SecretId=secret_arn, VersionStage="AWSCURRENT"
+    )
+    assert list(sorted(current_secret["VersionStages"])) == ["AWSCURRENT", "AWSPENDING"]
+    assert current_secret["SecretString"] == "new_secret"
+
+    previous_secret = sm_client.get_secret_value(
+        SecretId=secret_arn, VersionStage="AWSPREVIOUS"
+    )
+    assert previous_secret["VersionStages"] == ["AWSPREVIOUS"]
+    assert previous_secret["SecretString"] == "previous_secret"
+
+
+@secretsmanager_aws_verified
+@pytest.mark.aws_verified
+def test_update_secret_version_stage_dont_specify_current_stage(secret_arn=None):
+    sm_client = boto3.client("secretsmanager", "us-east-1")
+    current_version = sm_client.put_secret_value(
+        SecretId=secret_arn,
+        SecretString="previous_secret",
+        VersionStages=["AWSCURRENT"],
+    )["VersionId"]
+
+    token = str(uuid4())
+    sm_client.put_secret_value(
+        SecretId=secret_arn,
+        ClientRequestToken=token,
+        SecretString="new_secret",
+        VersionStages=["AWSPENDING"],
+    )
+
+    # Without specifying version that currently has stage AWSCURRENT
+    with pytest.raises(ClientError) as exc:
+        sm_client.update_secret_version_stage(
+            SecretId=secret_arn, VersionStage="AWSCURRENT", MoveToVersionId=token
+        )
+    err = exc.value.response["Error"]
+    assert err["Code"] == "InvalidParameterException"
+    assert (
+        err["Message"]
+        == f"The parameter RemoveFromVersionId can't be empty. Staging label AWSCURRENT is currently attached to version {current_version}, so you must explicitly reference that version in RemoveFromVersionId."
+    )

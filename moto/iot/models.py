@@ -15,7 +15,9 @@ from moto.core.base_backend import BackendDict, BaseBackend
 from moto.core.common_models import BaseModel
 from moto.core.utils import utcnow
 from moto.moto_api._internal import mock_random as random
+from moto.settings import iot_use_valid_cert
 from moto.utilities.paginator import paginate
+from moto.utilities.utils import get_partition
 
 from .exceptions import (
     CertificateStateException,
@@ -48,7 +50,7 @@ class FakeThing(BaseModel):
         self.thing_name = thing_name
         self.thing_type = thing_type
         self.attributes = attributes
-        self.arn = f"arn:aws:iot:{region_name}:{account_id}:thing/{thing_name}"
+        self.arn = f"arn:{get_partition(region_name)}:iot:{region_name}:{account_id}:thing/{thing_name}"
         self.version = 1
         # TODO: we need to handle "version"?
 
@@ -58,6 +60,11 @@ class FakeThing(BaseModel):
     def matches(self, query_string: str) -> bool:
         if query_string == "*":
             return True
+        if query_string.startswith("thingTypeName:"):
+            if not self.thing_type:
+                return False
+            qs = query_string[14:].replace("*", ".*").replace("?", ".")
+            return re.search(f"^{qs}$", self.thing_type.thing_type_name) is not None
         if query_string.startswith("thingName:"):
             qs = query_string[10:].replace("*", ".*").replace("?", ".")
             return re.search(f"^{qs}$", self.thing_name) is not None
@@ -107,7 +114,7 @@ class FakeThingType(BaseModel):
         self.thing_type_id = str(random.uuid4())  # I don't know the rule of id
         t = time.time()
         self.metadata = {"deprecated": False, "creationDate": int(t * 1000) / 1000.0}
-        self.arn = f"arn:aws:iot:{self.region_name}:{self.account_id}:thingtype/{thing_type_name}"
+        self.arn = f"arn:{get_partition(self.region_name)}:iot:{self.region_name}:{self.account_id}:thingtype/{thing_type_name}"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -163,7 +170,7 @@ class FakeThingGroup(BaseModel):
                         }
                     ]
                 )
-        self.arn = f"arn:aws:iot:{self.region_name}:{self.account_id}:thinggroup/{thing_group_name}"
+        self.arn = f"arn:{get_partition(self.region_name)}:iot:{self.region_name}:{self.account_id}:thinggroup/{thing_group_name}"
         self.things: Dict[str, FakeThing] = OrderedDict()
 
     def to_dict(self) -> Dict[str, Any]:
@@ -186,11 +193,10 @@ class FakeCertificate(BaseModel):
         region_name: str,
         ca_certificate_id: Optional[str] = None,
     ):
-        m = hashlib.sha256()
-        m.update(certificate_pem.encode("utf-8"))
-        self.certificate_id = m.hexdigest()
-        self.arn = f"arn:aws:iot:{region_name}:{account_id}:cert/{self.certificate_id}"
+        self.certificate_id = self.compute_cert_id(certificate_pem)
+        self.arn = f"arn:{get_partition(region_name)}:iot:{region_name}:{account_id}:cert/{self.certificate_id}"
         self.certificate_pem = certificate_pem
+
         self.status = status
 
         self.owner = account_id
@@ -200,6 +206,32 @@ class FakeCertificate(BaseModel):
         self.validity_not_before = time.time() - 86400
         self.validity_not_after = time.time() + 86400
         self.ca_certificate_id = ca_certificate_id
+
+    def compute_cert_id(self, certificate_pem: str) -> str:
+        if iot_use_valid_cert():
+            return self.compute_der_cert_id(certificate_pem)
+        else:
+            return self.compute_pem_cert_id(certificate_pem)
+
+    def compute_pem_cert_id(self, certificate_pem: str) -> str:
+        """
+        Original (incorrect) PEM-based hash kept for backwards compatibility
+        with existing tests which may or may not use valid certs. Also useful
+        for simplifying tests that don't require a real cert.
+        """
+        m = hashlib.sha256()
+        m.update(certificate_pem.encode("utf-8"))
+        return m.hexdigest()
+
+    def compute_der_cert_id(self, certificate_pem: str) -> str:
+        """
+        Compute the certificate hash based on DER encoding
+        """
+        return hashlib.sha256(
+            x509.load_pem_x509_certificate(
+                certificate_pem.encode("utf-8")
+            ).public_bytes(serialization.Encoding.DER)
+        ).hexdigest()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -262,7 +294,7 @@ class FakePolicy(BaseModel):
     ):
         self.name = name
         self.document = document
-        self.arn = f"arn:aws:iot:{region_name}:{account_id}:policy/{name}"
+        self.arn = f"arn:{get_partition(region_name)}:iot:{region_name}:{account_id}:policy/{name}"
         self.default_version_id = default_version_id
         self.versions = [
             FakePolicyVersion(self.name, document, True, account_id, region_name)
@@ -300,7 +332,7 @@ class FakePolicyVersion:
         version_id: int = 1,
     ):
         self.name = policy_name
-        self.arn = f"arn:aws:iot:{region_name}:{account_id}:policy/{policy_name}"
+        self.arn = f"arn:{get_partition(region_name)}:iot:{region_name}:{account_id}:policy/{policy_name}"
         self.document = document or {}
         self.is_default = is_default
         self._version_id = version_id
@@ -364,7 +396,7 @@ class FakeJob(BaseModel):
         self.account_id = account_id
         self.region_name = region_name
         self.job_id = job_id
-        self.job_arn = f"arn:aws:iot:{self.region_name}:{self.account_id}:job/{job_id}"
+        self.job_arn = f"arn:{get_partition(self.region_name)}:iot:{self.region_name}:{self.account_id}:job/{job_id}"
         self.targets = targets
         self.document_source = document_source
         self.document = document
@@ -534,7 +566,7 @@ class FakeRule(BaseModel):
         self.error_action = error_action or {}
         self.sql = sql
         self.aws_iot_sql_version = aws_iot_sql_version or "2016-03-23"
-        self.arn = f"arn:aws:iot:{self.region_name}:{self.account_id}:rule/{rule_name}"
+        self.arn = f"arn:{get_partition(self.region_name)}:iot:{self.region_name}:{self.account_id}:rule/{rule_name}"
 
     def to_get_dict(self) -> Dict[str, Any]:
         return {
@@ -580,7 +612,7 @@ class FakeDomainConfiguration(BaseModel):
                 f"operation: Service type {service_type} not recognized."
             )
         self.domain_configuration_name = domain_configuration_name
-        self.domain_configuration_arn = f"arn:aws:iot:{region_name}:{account_id}:domainconfiguration/{domain_configuration_name}/{random.get_random_string(length=5)}"
+        self.domain_configuration_arn = f"arn:{get_partition(region_name)}:iot:{region_name}:{account_id}:domainconfiguration/{domain_configuration_name}/{random.get_random_string(length=5)}"
         self.domain_name = domain_name
         self.server_certificates = []
         if server_certificate_arns:
@@ -625,12 +657,12 @@ class IoTBackend(BaseBackend):
         self.ca_certificates: Dict[str, FakeCaCertificate] = OrderedDict()
         self.certificates: Dict[str, FakeCertificate] = OrderedDict()
         self.policies: Dict[str, FakePolicy] = OrderedDict()
-        self.principal_policies: Dict[
-            Tuple[str, str], Tuple[str, FakePolicy]
-        ] = OrderedDict()
-        self.principal_things: Dict[
-            Tuple[str, str], Tuple[str, FakeThing]
-        ] = OrderedDict()
+        self.principal_policies: Dict[Tuple[str, str], Tuple[str, FakePolicy]] = (
+            OrderedDict()
+        )
+        self.principal_things: Dict[Tuple[str, str], Tuple[str, FakeThing]] = (
+            OrderedDict()
+        )
         self.rules: Dict[str, FakeRule] = OrderedDict()
         self.endpoint: Optional[FakeEndpoint] = None
         self.domain_configurations: Dict[str, FakeDomainConfiguration] = OrderedDict()
@@ -1459,8 +1491,11 @@ class IoTBackend(BaseBackend):
             attributes = attribute_payload["attributes"]
             if attributes:
                 # might not exist yet, for example when the thing group was created without attributes
-                current_attribute_payload = thing_group.thing_group_properties.setdefault(
-                    "attributePayload", {"attributes": {}}  # type: ignore
+                current_attribute_payload = (
+                    thing_group.thing_group_properties.setdefault(
+                        "attributePayload",
+                        {"attributes": {}},  # type: ignore
+                    )
                 )
                 if not do_merge:
                     current_attribute_payload["attributes"] = attributes  # type: ignore
@@ -1469,9 +1504,9 @@ class IoTBackend(BaseBackend):
         elif attribute_payload is not None and "attributes" not in attribute_payload:
             thing_group.attributes = {}  # type: ignore
         if "thingGroupDescription" in thing_group_properties:
-            thing_group.thing_group_properties[
-                "thingGroupDescription"
-            ] = thing_group_properties["thingGroupDescription"]
+            thing_group.thing_group_properties["thingGroupDescription"] = (
+                thing_group_properties["thingGroupDescription"]
+            )
         thing_group.version = thing_group.version + 1
         return thing_group.version
 
@@ -1793,6 +1828,9 @@ class IoTBackend(BaseBackend):
         return self.rules[rule_name].to_get_dict()
 
     def create_topic_rule(self, rule_name: str, sql: str, **kwargs: Any) -> None:
+        if not re.match("^[a-zA-Z0-9_]+$", rule_name):
+            msg = f"1 validation error detected: Value '{rule_name}' at 'ruleName' failed to satisfy constraint: Member must satisfy regular expression pattern: ^[a-zA-Z0-9_]+$"
+            raise InvalidRequestException(msg)
         if rule_name in self.rules:
             raise ResourceAlreadyExistsException(
                 "Rule with given name already exists", "", self.rules[rule_name].arn

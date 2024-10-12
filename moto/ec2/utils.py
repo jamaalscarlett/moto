@@ -431,6 +431,7 @@ filter_dict_attribute_mapping = {
     "subnet-id": "subnet_id",
     "dns-name": "public_dns",
     "key-name": "key_name",
+    "product-code": "product_codes",
 }
 
 
@@ -516,13 +517,13 @@ def filter_internet_gateways(
 
 def is_filter_matching(obj: Any, _filter: str, filter_value: Any) -> bool:
     value = obj.get_filter_value(_filter)
-
     if filter_value is None:
         return False
 
     if isinstance(value, str):
         if not isinstance(filter_value, list):
             filter_value = [filter_value]
+
         if any(fnmatch.fnmatch(value, pattern) for pattern in filter_value):
             return True
         return False
@@ -533,6 +534,9 @@ def is_filter_matching(obj: Any, _filter: str, filter_value: Any) -> bool:
 
     try:
         value = set(value)
+        if isinstance(filter_value, list) and len(filter_value) == 1:
+            return any(fnmatch.fnmatch(element, filter_value[0]) for element in value)
+
         return (value and value.issubset(filter_value)) or value.issuperset(
             filter_value
         )
@@ -544,7 +548,7 @@ def generic_filter(
     filters: Dict[str, Any], objects: List[FILTER_TYPE]
 ) -> List[FILTER_TYPE]:
     if filters:
-        for (_filter, _filter_value) in filters.items():
+        for _filter, _filter_value in filters.items():
             objects = [
                 obj
                 for obj in objects
@@ -568,11 +572,17 @@ def random_ed25519_key_pair() -> Dict[str, str]:
         format=serialization.PrivateFormat.OpenSSH,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    fingerprint = public_key_fingerprint(private_key.public_key())
+    public_key = private_key.public_key()
+    public_key_material = public_key.public_bytes(
+        encoding=serialization.Encoding.OpenSSH,
+        format=serialization.PublicFormat.OpenSSH,
+    )
+    fingerprint = public_key_fingerprint(public_key)
 
     return {
         "fingerprint": fingerprint,
         "material": private_key_material.decode("ascii"),
+        "material_public": public_key_material.decode("ascii"),
     }
 
 
@@ -585,11 +595,17 @@ def random_rsa_key_pair() -> Dict[str, str]:
         format=serialization.PrivateFormat.TraditionalOpenSSL,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    fingerprint = public_key_fingerprint(private_key.public_key())
+    public_key = private_key.public_key()
+    public_key_material = public_key.public_bytes(
+        encoding=serialization.Encoding.OpenSSH,
+        format=serialization.PublicFormat.OpenSSH,
+    )
+    fingerprint = public_key_fingerprint(public_key)
 
     return {
         "fingerprint": fingerprint,
         "material": private_key_material.decode("ascii"),
+        "material_public": public_key_material.decode("ascii"),
     }
 
 
@@ -635,6 +651,12 @@ def is_valid_ipv6_cidr(cird: str) -> bool:
     cidr_pattern = r"^s*((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}:){6}(:[0-9A-Fa-f]{1,4}|((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3})|:))|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){1,2})|:((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3})|:))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){1,3})|((:[0-9A-Fa-f]{1,4})?:((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){1,4})|((:[0-9A-Fa-f]{1,4}){0,2}:((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){1,5})|((:[0-9A-Fa-f]{1,4}){0,3}:((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){1,6})|((:[0-9A-Fa-f]{1,4}){0,4}:((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3}))|:))|(:(((:[0-9A-Fa-f]{1,4}){1,7})|((:[0-9A-Fa-f]{1,4}){0,5}:((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3}))|:)))(%.+)?s*(\/([0-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8]))?$"
     cidr_pattern_re = re.compile(cidr_pattern)
     return cidr_pattern_re.match(cird) is not None
+
+
+def is_valid_security_group_id(sg_id: str) -> bool:
+    security_group_id_pattern = r"^sg-[a-f0-9]{8,17}$"
+    compiled_re = re.compile(security_group_id_pattern)
+    return compiled_re.match(sg_id) is not None
 
 
 def generate_instance_identity_document(instance: Any) -> Dict[str, Any]:
@@ -710,7 +732,7 @@ def _convert_rfc4716(data: bytes) -> bytes:
 
 
 def public_key_parse(
-    key_material: Union[str, bytes]
+    key_material: Union[str, bytes],
 ) -> Union[RSAPublicKey, Ed25519PublicKey]:
     try:
         if isinstance(key_material, str):
@@ -767,21 +789,23 @@ def filter_iam_instance_profile_associations(
 
 def filter_iam_instance_profiles(
     account_id: str,
+    partition: str,
     iam_instance_profile_arn: Optional[str],
     iam_instance_profile_name: Optional[str],
 ) -> Any:
     instance_profile = None
     instance_profile_by_name = None
     instance_profile_by_arn = None
+    backend = iam_backends[account_id][partition]
     if iam_instance_profile_name:
-        instance_profile_by_name = iam_backends[account_id][
-            "global"
-        ].get_instance_profile(iam_instance_profile_name)
+        instance_profile_by_name = backend.get_instance_profile(
+            iam_instance_profile_name
+        )
         instance_profile = instance_profile_by_name
     if iam_instance_profile_arn:
-        instance_profile_by_arn = iam_backends[account_id][
-            "global"
-        ].get_instance_profile_by_arn(iam_instance_profile_arn)
+        instance_profile_by_arn = backend.get_instance_profile_by_arn(
+            iam_instance_profile_arn
+        )
         instance_profile = instance_profile_by_arn
     # We would prefer instance profile that we found by arn
     if iam_instance_profile_arn and iam_instance_profile_name:

@@ -20,7 +20,7 @@ from moto.core.utils import (
     unix_time_millis,
 )
 from moto.moto_api._internal import mock_random as random
-from moto.utilities.utils import md5_hash
+from moto.utilities.utils import get_partition, md5_hash
 
 from .constants import MAXIMUM_VISIBILITY_TIMEOUT
 from .exceptions import (
@@ -278,7 +278,7 @@ class Queue(CloudFormationModel):
 
         now = unix_time()
         self.created_timestamp = now
-        self.queue_arn = f"arn:aws:sqs:{region}:{account_id}:{name}"
+        self.queue_arn = f"arn:{get_partition(region)}:sqs:{region}:{account_id}:{name}"
         self.dead_letter_queue: Optional["Queue"] = None
         self.fifo_queue = False
 
@@ -313,6 +313,22 @@ class Queue(CloudFormationModel):
             or self.maximum_message_size > MAXIMUM_MESSAGE_SIZE_ATTR_UPPER_BOUND  # type: ignore
         ):
             raise InvalidAttributeValue("MaximumMessageSize")
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @name.setter
+    def name(self, value: str) -> None:
+        # https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_CreateQueue.html#SQS-CreateQueue-request-QueueName
+        if re.match(r"^[a-zA-Z0-9\_-]{1,80}$", value) or re.match(
+            r"^[a-zA-Z0-9\_-]{1,75}(\.fifo)?$", value
+        ):
+            self._name = value
+        else:
+            raise InvalidParameterValue(
+                "Can only include alphanumeric characters, hyphens, or underscores. 1 to 80 in length"
+            )
 
     @property
     def pending_messages(self) -> Set[Message]:
@@ -448,7 +464,9 @@ class Queue(CloudFormationModel):
         tags_dict = tags_from_cloudformation_tags_list(tags)
 
         # Could be passed as an integer - just treat it as a string
-        resource_name = str(resource_name)
+        # take first 80 characters of the q name, more is invalid
+        # https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_CreateQueue.html#SQS-CreateQueue-request-QueueName
+        resource_name = str(resource_name)[0:80]
 
         sqs_backend = sqs_backends[account_id][region_name]
         return sqs_backend.create_queue(
@@ -679,15 +697,6 @@ class SQSBackend(BaseBackend):
         super().__init__(region_name, account_id)
         self.queues: Dict[str, Queue] = {}
 
-    @staticmethod
-    def default_vpc_endpoint_service(
-        service_region: str, zones: List[str]
-    ) -> List[Dict[str, str]]:
-        """Default VPC endpoint service."""
-        return BaseBackend.default_vpc_endpoint_service_factory(
-            service_region, zones, "sqs"
-        )
-
     def create_queue(
         self, name: str, tags: Optional[Dict[str, str]] = None, **kwargs: Any
     ) -> Queue:
@@ -850,14 +859,14 @@ class SQSBackend(BaseBackend):
     ) -> Message:
         queue = self.get_queue(queue_name)
 
+        self._validate_message(
+            queue, message_body, int(delay_seconds or 0), deduplication_id, group_id
+        )
+
         if delay_seconds is not None:
             delay_seconds = int(delay_seconds)
         else:
             delay_seconds = queue.delay_seconds  # type: ignore
-
-        self._validate_message(
-            queue, message_body, delay_seconds, deduplication_id, group_id
-        )
 
         message_id = str(random.uuid4())
         message = Message(message_id, message_body, system_attributes)
@@ -882,7 +891,7 @@ class SQSBackend(BaseBackend):
         if message_attributes:
             message.message_attributes = message_attributes
 
-        if delay_seconds > MAXIMUM_MESSAGE_DELAY:  # type: ignore
+        if delay_seconds > MAXIMUM_MESSAGE_DELAY:
             msg = (
                 f"Value {delay_seconds} for parameter DelaySeconds is invalid. "
                 "Reason: DelaySeconds must be >= 0 and <= 900."
@@ -1146,7 +1155,12 @@ class SQSBackend(BaseBackend):
         return queues
 
     def add_permission(
-        self, queue_name: str, actions: List[str], account_ids: List[str], label: str
+        self,
+        region_name: str,
+        queue_name: str,
+        actions: List[str],
+        account_ids: List[str],
+        label: str,
     ) -> None:
         queue = self.get_queue(queue_name)
 
@@ -1186,7 +1200,10 @@ class SQSBackend(BaseBackend):
                 f"Value {label} for parameter Label is invalid. Reason: Already exists."
             )
 
-        principals = [f"arn:aws:iam::{account_id}:root" for account_id in account_ids]
+        principals = [
+            f"arn:{get_partition(region_name)}:iam::{account_id}:root"
+            for account_id in account_ids
+        ]
         actions = [f"SQS:{action}" for action in actions]
 
         statement = {

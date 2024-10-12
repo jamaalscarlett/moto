@@ -23,6 +23,7 @@ from .exceptions import (
     AccessDeniedException,
     DocumentAlreadyExists,
     DocumentPermissionLimit,
+    DoesNotExistException,
     DuplicateDocumentContent,
     DuplicateDocumentVersionName,
     InvalidDocument,
@@ -374,7 +375,7 @@ MAX_TIMEOUT_SECONDS = 3600
 
 
 def generate_ssm_doc_param_list(
-    parameters: Dict[str, Any]
+    parameters: Dict[str, Any],
 ) -> Optional[List[Dict[str, Any]]]:
     if not parameters:
         return None
@@ -1178,25 +1179,17 @@ class SimpleSystemManagerBackend(BaseBackend):
         super().__init__(region_name, account_id)
         self._parameters = ParameterDict(account_id, region_name)
 
-        self._resource_tags: DefaultDict[
-            str, DefaultDict[str, Dict[str, str]]
-        ] = defaultdict(lambda: defaultdict(dict))
+        self._resource_tags: DefaultDict[str, DefaultDict[str, Dict[str, str]]] = (
+            defaultdict(lambda: defaultdict(dict))
+        )
         self._commands: List[Command] = []
         self._errors: List[str] = []
         self._documents: Dict[str, Documents] = {}
 
         self.windows: Dict[str, FakeMaintenanceWindow] = dict()
         self.baselines: Dict[str, FakePatchBaseline] = dict()
-
-    @staticmethod
-    def default_vpc_endpoint_service(
-        service_region: str, zones: List[str]
-    ) -> List[Dict[str, str]]:
-        """Default VPC endpoint services."""
-        return BaseBackend.default_vpc_endpoint_service_factory(
-            service_region, zones, "ssm"
-        ) + BaseBackend.default_vpc_endpoint_service_factory(
-            service_region, zones, "ssmmessages"
+        self.ssm_prefix = (
+            f"arn:{self.partition}:ssm:{self.region_name}:{self.account_id}:parameter"
         )
 
     def _generate_document_information(
@@ -1926,6 +1919,9 @@ class SimpleSystemManagerBackend(BaseBackend):
         return True
 
     def get_parameter(self, name: str) -> Optional[Parameter]:
+        if name.startswith(self.ssm_prefix):
+            name = name.replace(self.ssm_prefix, "")
+
         name_parts = name.split(":")
         name_prefix = name_parts[0]
 
@@ -2320,9 +2316,10 @@ class SimpleSystemManagerBackend(BaseBackend):
 
     def get_maintenance_window(self, window_id: str) -> FakeMaintenanceWindow:
         """
-        The window is assumed to exist - no error handling has been implemented yet.
         The NextExecutionTime-field is not returned.
         """
+        if window_id not in self.windows:
+            raise DoesNotExistException(window_id)
         return self.windows[window_id]
 
     def describe_maintenance_windows(
@@ -2342,8 +2339,10 @@ class SimpleSystemManagerBackend(BaseBackend):
 
     def delete_maintenance_window(self, window_id: str) -> None:
         """
-        Assumes the provided WindowId exists. No error handling has been implemented yet.
+        Delete a maintenance window.
         """
+        if window_id not in self.windows:
+            raise DoesNotExistException(window_id)
         del self.windows[window_id]
 
     def create_patch_baseline(

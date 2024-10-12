@@ -23,6 +23,7 @@ from moto.core.base_backend import BackendDict, BaseBackend
 from moto.core.common_models import BaseModel, CloudFormationModel
 from moto.core.utils import path_url
 from moto.moto_api._internal import mock_random as random
+from moto.utilities.utils import ARN_PARTITION_REGEX, get_partition
 
 from ..core.models import responses_mock
 from .exceptions import (
@@ -70,6 +71,7 @@ from .exceptions import (
 from .utils import create_id, to_path
 
 STAGE_URL = "https://{api_id}.execute-api.{region_name}.amazonaws.com/{stage_name}"
+PATCH_OPERATIONS = ["add", "remove", "replace", "move", "copy", "test"]
 
 
 class Deployment(CloudFormationModel):
@@ -453,7 +455,8 @@ class Resource(CloudFormationModel):
         integration_type = integration.integration_type  # type: ignore[union-attr]
 
         status, result = self.integration_parsers[integration_type].invoke(
-            request, integration  # type: ignore[arg-type]
+            request,
+            integration,  # type: ignore[arg-type]
         )
 
         return status, result
@@ -603,7 +606,9 @@ class Authorizer(BaseModel):
             elif "/type" in op["path"]:
                 self.type = op["value"]
             else:
-                raise Exception(f'Patch operation "{op["op"]}" not implemented')
+                raise BadRequestException(
+                    f'Patch operation "{op["op"]}" not implemented'
+                )
         return self
 
 
@@ -704,12 +709,12 @@ class Stage(BaseModel):
         updated_key = self._method_settings_translations(key)
         if updated_key is not None:
             if resource_path_and_method not in self.method_settings:
-                self.method_settings[
-                    resource_path_and_method
-                ] = self._get_default_method_settings()
-            self.method_settings[resource_path_and_method][
-                updated_key
-            ] = self._convert_to_type(updated_key, value)
+                self.method_settings[resource_path_and_method] = (
+                    self._get_default_method_settings()
+                )
+            self.method_settings[resource_path_and_method][updated_key] = (
+                self._convert_to_type(updated_key, value)
+            )
 
     def _get_default_method_settings(self) -> Dict[str, Any]:
         return {
@@ -859,32 +864,37 @@ class UsagePlan(BaseModel):
         self.tags = tags
 
     def to_json(self) -> Dict[str, Any]:
-        return {
+        resp = {
             "id": self.id,
             "name": self.name,
             "description": self.description,
             "apiStages": self.api_stages,
-            "throttle": self.throttle,
-            "quota": self.quota,
             "productCode": self.product_code,
             "tags": self.tags,
         }
+        if self.throttle:
+            resp["throttle"] = self.throttle
+        if self.quota:
+            resp["quota"] = self.quota
+        return resp
 
     def apply_patch_operations(self, patch_operations: List[Dict[str, Any]]) -> None:
         for op in patch_operations:
             path = op["path"]
-            value = op["value"]
             if op["op"] == "add":
+                value = op["value"]
                 if path == "/apiStages":
                     self.api_stages.append(
                         {"apiId": value.split(":")[0], "stage": value.split(":")[1]}
                     )
             if op["op"] == "replace":
+                value = op["value"]
                 if "/name" in path:
                     self.name = value
                 if "/description" in path:
                     self.description = value
             if op["op"] in ["add", "replace"]:
+                value = op["value"]
                 if "/productCode" in path:
                     self.product_code = value
                 if "/quota/limit" in path:
@@ -897,6 +907,18 @@ class UsagePlan(BaseModel):
                     self.throttle["rateLimit"] = int(value)
                 if "/throttle/burstLimit" in path:
                     self.throttle["burstLimit"] = int(value)
+            if op["op"] == "remove":
+                if path == "/apiStages":
+                    value = op["value"]
+                    self.api_stages.remove(
+                        {"apiId": value.split(":")[0], "stage": value.split(":")[1]}
+                    )
+                if path == "/productCode":
+                    self.product_code = None
+                if path == "/quota":
+                    self.quota.clear()
+                if path == "/throttle":
+                    self.throttle.clear()
 
 
 class RequestValidator(BaseModel):
@@ -987,7 +1009,6 @@ class VpcLink(BaseModel):
 
 
 class RestAPI(CloudFormationModel):
-
     PROP_ID = "id"
     PROP_NAME = "name"
     PROP_DESCRIPTION = "description"
@@ -1000,6 +1021,7 @@ class RestAPI(CloudFormationModel):
     PROP_POLICY = "policy"
     PROP_DISABLE_EXECUTE_API_ENDPOINT = "disableExecuteApiEndpoint"
     PROP_MINIMUM_COMPRESSION_SIZE = "minimumCompressionSize"
+    PROP_ROOT_RESOURCE_ID = "rootResourceId"
 
     # operations
     OPERATION_ADD = "add"
@@ -1044,6 +1066,7 @@ class RestAPI(CloudFormationModel):
         self.models: Dict[str, Model] = {}
         self.request_validators: Dict[str, RequestValidator] = {}
         self.default = self.add_child("/")  # Add default child
+        self.root_resource_id = self.default.id
 
     def __repr__(self) -> str:
         return str(self.id)
@@ -1062,6 +1085,7 @@ class RestAPI(CloudFormationModel):
             self.PROP_POLICY: self.policy,
             self.PROP_DISABLE_EXECUTE_API_ENDPOINT: self.disableExecuteApiEndpoint,
             self.PROP_MINIMUM_COMPRESSION_SIZE: self.minimum_compression_size,
+            self.PROP_ROOT_RESOURCE_ID: self.root_resource_id,
         }
 
     def apply_patch_operations(self, patch_operations: List[Dict[str, Any]]) -> None:
@@ -1445,7 +1469,6 @@ class Model(BaseModel):
 
 
 class BasePathMapping(BaseModel):
-
     # operations
     OPERATION_REPLACE = "replace"
     OPERATION_PATH = "path"
@@ -1510,6 +1533,54 @@ class GatewayResponse(BaseModel):
         return dct
 
 
+class Account(BaseModel):
+    def __init__(self) -> None:
+        self.cloudwatch_role_arn: Optional[str] = None
+        self.throttle_settings: Dict[str, Any] = {
+            "burstLimit": 5000,
+            "rateLimit": 10000.0,
+        }
+        self.features: Optional[List[str]] = None
+        self.api_key_version: str = "1"
+
+    def apply_patch_operations(
+        self, patch_operations: List[Dict[str, Any]]
+    ) -> "Account":
+        for op in patch_operations:
+            if "/cloudwatchRoleArn" in op["path"]:
+                self.cloudwatch_role_arn = op["value"]
+            elif "/features" in op["path"]:
+                if op["op"] == "add":
+                    if self.features is None:
+                        self.features = [op["value"]]
+                    else:
+                        self.features.append(op["value"])
+                elif op["op"] == "remove":
+                    if op["value"] == "UsagePlans":
+                        raise BadRequestException(
+                            "Usage Plans cannot be disabled once enabled"
+                        )
+                    if self.features is not None:
+                        self.features.remove(op["value"])
+                else:
+                    raise NotImplementedError(
+                        f'Patch operation "{op["op"]}" for "/features" not implemented'
+                    )
+            else:
+                raise NotImplementedError(
+                    f'Patch operation "{op["op"]}" for "{op["path"]}" not implemented'
+                )
+        return self
+
+    def to_json(self) -> Dict[str, Any]:
+        return {
+            "cloudwatchRoleArn": self.cloudwatch_role_arn,
+            "throttleSettings": self.throttle_settings,
+            "features": self.features,
+            "apiKeyVersion": self.api_key_version,
+        }
+
+
 class APIGatewayBackend(BaseBackend):
     """
     API Gateway mock.
@@ -1539,6 +1610,7 @@ class APIGatewayBackend(BaseBackend):
 
     def __init__(self, region_name: str, account_id: str):
         super().__init__(region_name, account_id)
+        self.account: Account = Account()
         self.apis: Dict[str, RestAPI] = {}
         self.keys: Dict[str, ApiKey] = {}
         self.usage_plans: Dict[str, UsagePlan] = {}
@@ -1664,9 +1736,7 @@ class APIGatewayBackend(BaseBackend):
             api.resources = {}
             api.default = api.add_child("/")  # Add default child
 
-        for (path, resource_doc) in sorted(
-            api_doc["paths"].items(), key=lambda x: x[0]
-        ):
+        for path, resource_doc in sorted(api_doc["paths"].items(), key=lambda x: x[0]):
             # We may want to create a path like /store/inventory
             # Ensure that /store exists first, so we can use it as a parent
             ancestors = path.split("/")[
@@ -1698,12 +1768,12 @@ class APIGatewayBackend(BaseBackend):
                 path_part=path[path.rfind("/") + 1 :],
             )
 
-            for (method_type, method_doc) in resource_doc.items():
+            for method_type, method_doc in resource_doc.items():
                 method_type = method_type.upper()
                 if method_doc.get("x-amazon-apigateway-integration") is None:
                     self.put_method(function_id, resource.id, method_type, None)
                     method_responses = method_doc.get("responses", {}).items()
-                    for (response_code, _) in method_responses:
+                    for response_code, _ in method_responses:
                         self.put_method_response(
                             function_id,
                             resource.id,
@@ -1934,7 +2004,8 @@ class APIGatewayBackend(BaseBackend):
     ) -> Integration:
         resource = self.get_resource(function_id, resource_id)
         if credentials and not re.match(
-            "^arn:aws:iam::" + str(self.account_id), credentials
+            f"^arn:{get_partition(self.region_name)}:iam::" + str(self.account_id),
+            credentials,
         ):
             raise CrossAccountNotAllowed()
         if not integration_method and integration_type in [
@@ -1945,21 +2016,25 @@ class APIGatewayBackend(BaseBackend):
         ]:
             raise IntegrationMethodNotDefined()
         if integration_type in ["AWS_PROXY"] and re.match(
-            "^arn:aws:apigateway:[a-zA-Z0-9-]+:s3", uri
+            ARN_PARTITION_REGEX + ":apigateway:[a-zA-Z0-9-]+:s3", uri
         ):
             raise AwsProxyNotAllowed()
         if (
             integration_type in ["AWS"]
-            and re.match("^arn:aws:apigateway:[a-zA-Z0-9-]+:s3", uri)
+            and re.match(ARN_PARTITION_REGEX + ":apigateway:[a-zA-Z0-9-]+:s3", uri)
             and not credentials
         ):
             raise RoleNotSpecified()
         if integration_type in ["HTTP", "HTTP_PROXY"] and not self._uri_validator(uri):
             raise InvalidHttpEndpoint()
-        if integration_type in ["AWS", "AWS_PROXY"] and not re.match("^arn:aws:", uri):
+        if integration_type in ["AWS", "AWS_PROXY"] and not re.match(
+            ARN_PARTITION_REGEX + ":", uri
+        ):
             raise InvalidArn()
         if integration_type in ["AWS", "AWS_PROXY"] and not re.match(
-            "^arn:aws:apigateway:[a-zA-Z0-9-]+:[a-zA-Z0-9-.]+:(path|action)/", uri
+            ARN_PARTITION_REGEX
+            + ":apigateway:[a-zA-Z0-9-]+:[a-zA-Z0-9-.]+:(path|action)/",
+            uri,
         ):
             raise InvalidIntegrationArn()
         integration = resource.add_integration(
@@ -2075,8 +2150,12 @@ class APIGatewayBackend(BaseBackend):
         self.keys[key.id] = key
         return key
 
-    def get_api_keys(self) -> List[ApiKey]:
-        return list(self.keys.values())
+    def get_api_keys(self, name: Optional[str] = None) -> List[ApiKey]:
+        return [
+            key
+            for key in self.keys.values()
+            if not name or (key.name and key.name.startswith(name))
+        ]
 
     def get_api_key(self, api_key_id: str) -> ApiKey:
         if api_key_id not in self.keys:
@@ -2115,7 +2194,7 @@ class APIGatewayBackend(BaseBackend):
         The following PatchOperations are currently supported:
         add    : Everything except /apiStages/{apidId:stageName}/throttle/ and children
         replace: Everything except /apiStages/{apidId:stageName}/throttle/ and children
-        remove : Nothing yet
+        remove : Everything except /apiStages/{apidId:stageName}/throttle/ and children
         copy   : Nothing yet
         """
         if usage_plan_id not in self.usage_plans:
@@ -2147,11 +2226,20 @@ class APIGatewayBackend(BaseBackend):
         self.usage_plan_keys[usage_plan_id][usage_plan_key.id] = usage_plan_key
         return usage_plan_key
 
-    def get_usage_plan_keys(self, usage_plan_id: str) -> List[UsagePlanKey]:
+    def get_usage_plan_keys(
+        self, usage_plan_id: str, name: Optional[str] = None
+    ) -> List[UsagePlanKey]:
         if usage_plan_id not in self.usage_plan_keys:
             return []
 
-        return list(self.usage_plan_keys[usage_plan_id].values())
+        plan_keys = self.usage_plan_keys[usage_plan_id].values()
+        if name:
+            return [
+                key
+                for key in plan_keys
+                if not name or (key.name and key.name.startswith(name))
+            ]
+        return list(plan_keys)
 
     def get_usage_plan_key(self, usage_plan_id: str, key_id: str) -> UsagePlanKey:
         # first check if is a valid api key
@@ -2358,7 +2446,6 @@ class APIGatewayBackend(BaseBackend):
     def update_base_path_mapping(
         self, domain_name: str, base_path: str, patch_operations: Any
     ) -> BasePathMapping:
-
         if domain_name not in self.domain_names:
             raise DomainNameNotFound()
 
@@ -2463,6 +2550,13 @@ class APIGatewayBackend(BaseBackend):
     def delete_gateway_response(self, rest_api_id: str, response_type: str) -> None:
         api = self.get_rest_api(rest_api_id)
         api.delete_gateway_response(response_type)
+
+    def update_account(self, patch_operations: List[Dict[str, Any]]) -> Account:
+        account = self.account.apply_patch_operations(patch_operations)
+        return account
+
+    def get_account(self) -> Account:
+        return self.account
 
 
 apigateway_backends = BackendDict(APIGatewayBackend, "apigateway")

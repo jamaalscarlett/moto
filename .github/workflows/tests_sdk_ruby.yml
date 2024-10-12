@@ -8,18 +8,18 @@ jobs:
 
     strategy:
       matrix:
-        ruby-version: ['3.2']
+        ruby-version: ['3.3']
 
     steps:
       - uses: actions/checkout@v4
       - name: Set up Ruby ${{ matrix.ruby-version }}
-        uses: ruby/setup-ruby@d4526a55538b775af234ba4af27118ed6f8f6677
+        uses: ruby/setup-ruby@f26937343756480a8cb3ae1f623b9c8d89ed6984
         with:
           ruby-version: ${{ matrix.ruby-version }}
       - name: Set up Python 3.8
         uses: actions/setup-python@v5
         with:
-          python-version: "3.8"
+          python-version: "3.10"
       - name: Start MotoServer
         run: |
           pip install build

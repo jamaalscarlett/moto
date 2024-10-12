@@ -14,6 +14,8 @@ from moto.ec2.models.subnets import Subnet
 from moto.moto_api._internal import mock_random
 from moto.utilities.tagging_service import TaggingService
 
+from ..elb.models import register_certificate
+from ..utilities.utils import ARN_PARTITION_REGEX
 from .exceptions import (
     ActionTargetGroupNotFoundError,
     DuplicateListenerError,
@@ -37,6 +39,7 @@ from .exceptions import (
     RuleNotFoundError,
     SubnetNotFoundError,
     TargetGroupNotFoundError,
+    TooManyCertificatesError,
     TooManyTagsError,
     ValidationError,
 )
@@ -144,6 +147,8 @@ class FakeTargetGroup(CloudFormationModel):
             self.attributes["stickiness.type"] = "source_ip"
 
         self.targets: Dict[str, Dict[str, Any]] = OrderedDict()
+        self.deregistered_targets: Dict[str, Dict[str, Any]] = OrderedDict()
+        self.terminated_targets: Dict[str, Dict[str, Any]] = OrderedDict()
 
     @property
     def physical_resource_id(self) -> str:
@@ -155,17 +160,20 @@ class FakeTargetGroup(CloudFormationModel):
                 "id": target["id"],
                 "port": target.get("port", self.port),
             }
+            self.deregistered_targets.pop(target["id"], None)
 
     def deregister(self, targets: List[Dict[str, Any]]) -> None:
         for target in targets:
             t = self.targets.pop(target["id"], None)
             if not t:
                 raise InvalidTargetError()
+            self.deregistered_targets[target["id"]] = t
 
     def deregister_terminated_instances(self, instance_ids: List[str]) -> None:
         for target_id in list(self.targets.keys()):
             if target_id in instance_ids:
-                del self.targets[target_id]
+                t = self.targets.pop(target_id)
+                self.terminated_targets[target_id] = t
 
     def health_for(self, target: Dict[str, Any], ec2_backend: Any) -> FakeHealthStatus:
         t = self.targets.get(target["id"])
@@ -173,6 +181,35 @@ class FakeTargetGroup(CloudFormationModel):
             port = self.port
             if "port" in target:
                 port = target["port"]
+            if target["id"] in self.deregistered_targets:
+                return FakeHealthStatus(
+                    target["id"],
+                    port,
+                    self.healthcheck_port,
+                    "unused",
+                    "Target.NotRegistered",
+                    "Target is not registered to the target group",
+                )
+            if target["id"] in self.terminated_targets:
+                return FakeHealthStatus(
+                    target["id"],
+                    port,
+                    self.healthcheck_port,
+                    "draining",
+                    "Target.DeregistrationInProgress",
+                    "Target deregistration is in progress",
+                )
+
+            if target["id"].startswith("i-"):  # EC2 instance ID
+                return FakeHealthStatus(
+                    target["id"],
+                    target.get("Port", 80),
+                    self.healthcheck_port,
+                    "unused",
+                    "Target.NotRegistered",
+                    "Target is not registered to the target group",
+                )
+
             return FakeHealthStatus(
                 target["id"],
                 port,
@@ -324,8 +361,12 @@ class FakeListener(CloudFormationModel):
 
         default_actions = elbv2_backend.convert_and_validate_properties(properties)
         certificates = elbv2_backend.convert_and_validate_certificates(certificates)
+        if certificates:
+            certificate = certificates[0].get("certificate_arn")
+        else:
+            certificate = None
         listener = elbv2_backend.create_listener(
-            load_balancer_arn, protocol, port, ssl_policy, certificates, default_actions
+            load_balancer_arn, protocol, port, ssl_policy, certificate, default_actions
         )
         return listener
 
@@ -580,6 +621,7 @@ class FakeLoadBalancer(CloudFormationModel):
         "connection_logs.s3.bucket",
         "connection_logs.s3.enabled",
         "connection_logs.s3.prefix",
+        "client_keep_alive.seconds",
         "deletion_protection.enabled",
         "dns_record.client_routing_policy",
         "idle_timeout.timeout_seconds",
@@ -721,15 +763,6 @@ class ELBv2Backend(BaseBackend):
         self.target_groups: Dict[str, FakeTargetGroup] = OrderedDict()
         self.load_balancers: Dict[str, FakeLoadBalancer] = OrderedDict()
         self.tagging_service = TaggingService()
-
-    @staticmethod
-    def default_vpc_endpoint_service(
-        service_region: str, zones: List[str]
-    ) -> List[Dict[str, str]]:
-        """Default VPC endpoint service."""
-        return BaseBackend.default_vpc_endpoint_service_factory(
-            service_region, zones, "elasticloadbalancing"
-        )
 
     @property
     def ec2_backend(self) -> Any:  # type: ignore[misc]
@@ -1229,7 +1262,6 @@ Member must satisfy regular expression pattern: {expression}"
             healthcheck_timeout_seconds is not None
             and healthcheck_interval_seconds is not None
         ):
-
             if healthcheck_interval_seconds < healthcheck_timeout_seconds:
                 message = f"Health check timeout '{healthcheck_timeout_seconds}' must be smaller than or equal to the interval '{healthcheck_interval_seconds}'"
                 if protocol in ("HTTP", "HTTPS"):
@@ -1394,6 +1426,14 @@ Member must satisfy regular expression pattern: {expression}"
             default_actions,
             alpn_policy,
         )
+        if certificate and not re.search(f"{ARN_PARTITION_REGEX}:iam:", certificate):
+            register_certificate(
+                account_id=self.account_id,
+                region=self.region_name,
+                arn_certificate=certificate,
+                arn_user=arn,
+            )
+
         balancer.listeners[listener.arn] = listener
         for action in default_actions:
             if action.type == "forward":
@@ -1475,7 +1515,6 @@ Member must satisfy regular expression pattern: {expression}"
         target_group_arns: List[str],
         names: Optional[List[str]],
     ) -> Iterable[FakeTargetGroup]:
-
         args = sum(bool(arg) for arg in [load_balancer_arn, target_group_arns, names])
 
         if args > 1:
@@ -1886,7 +1925,7 @@ Member must satisfy regular expression pattern: {expression}"
 
         from moto.iam import iam_backends
 
-        cert = iam_backends[self.account_id]["global"].get_certificate_by_arn(
+        cert = iam_backends[self.account_id][self.partition].get_certificate_by_arn(
             certificate_arn
         )
         if cert is not None:
@@ -1918,6 +1957,9 @@ Member must satisfy regular expression pattern: {expression}"
         listener = self.describe_listeners(load_balancer_arn=None, listener_arns=[arn])[
             0
         ]
+        # https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-limits.html
+        if len(certificates) + len(listener.certificates) > 25:
+            raise TooManyCertificatesError()
         listener.certificates.extend([c["certificate_arn"] for c in certificates])
         return listener.certificates
 
@@ -1990,4 +2032,4 @@ Member must satisfy regular expression pattern: {expression}"
         return resource
 
 
-elbv2_backends = BackendDict(ELBv2Backend, "ec2")
+elbv2_backends = BackendDict(ELBv2Backend, "elbv2")

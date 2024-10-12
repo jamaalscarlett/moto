@@ -1,9 +1,11 @@
 import json
 
 from moto.core.common_types import TYPE_RESPONSE
+from moto.core.config import default_user_config
 from moto.core.responses import BaseResponse
 
 from .models import StepFunctionBackend, stepfunctions_backends
+from .parser.api import ExecutionStatus
 
 
 class StepFunctionResponse(BaseResponse):
@@ -12,20 +14,42 @@ class StepFunctionResponse(BaseResponse):
 
     @property
     def stepfunction_backend(self) -> StepFunctionBackend:
-        return stepfunctions_backends[self.current_account][self.region]
+        if default_user_config.get("stepfunctions", {}).get(
+            "execute_state_machine", False
+        ):
+            from .parser.models import stepfunctions_parser_backends
+
+            return stepfunctions_parser_backends[self.current_account][self.region]
+        else:
+            return stepfunctions_backends[self.current_account][self.region]
 
     def create_state_machine(self) -> TYPE_RESPONSE:
         name = self._get_param("name")
         definition = self._get_param("definition")
         roleArn = self._get_param("roleArn")
         tags = self._get_param("tags")
+        publish = self._get_param("publish")
+        encryptionConfiguration = self._get_param("encryptionConfiguration")
+        loggingConfiguration = self._get_param("loggingConfiguration")
+        tracingConfiguration = self._get_param("tracingConfiguration")
         state_machine = self.stepfunction_backend.create_state_machine(
-            name=name, definition=definition, roleArn=roleArn, tags=tags
+            name=name,
+            definition=definition,
+            roleArn=roleArn,
+            tags=tags,
+            publish=publish,
+            loggingConfiguration=loggingConfiguration,
+            tracingConfiguration=tracingConfiguration,
+            encryptionConfiguration=encryptionConfiguration,
         )
         response = {
             "creationDate": state_machine.creation_date,
             "stateMachineArn": state_machine.arn,
         }
+        if publish:
+            response["stateMachineVersionArn"] = (
+                f"{state_machine.arn}:{state_machine.version}"
+            )
         return 200, {}, json.dumps(response)
 
     def list_state_machines(self) -> TYPE_RESPONSE:
@@ -62,6 +86,10 @@ class StepFunctionResponse(BaseResponse):
             "name": state_machine.name,
             "roleArn": state_machine.roleArn,
             "status": "ACTIVE",
+            "type": state_machine.type,
+            "encryptionConfiguration": state_machine.encryptionConfiguration,
+            "tracingConfiguration": state_machine.tracingConfiguration,
+            "loggingConfiguration": state_machine.loggingConfiguration,
         }
         return 200, {}, json.dumps(response)
 
@@ -74,12 +102,26 @@ class StepFunctionResponse(BaseResponse):
         arn = self._get_param("stateMachineArn")
         definition = self._get_param("definition")
         role_arn = self._get_param("roleArn")
+        tracing_config = self._get_param("tracingConfiguration")
+        encryption_config = self._get_param("encryptionConfiguration")
+        logging_config = self._get_param("loggingConfiguration")
+        publish = self._get_param("publish")
         state_machine = self.stepfunction_backend.update_state_machine(
-            arn=arn, definition=definition, role_arn=role_arn
+            arn=arn,
+            definition=definition,
+            role_arn=role_arn,
+            tracing_configuration=tracing_config,
+            encryption_configuration=encryption_config,
+            logging_configuration=logging_config,
+            publish=publish,
         )
         response = {
             "updateDate": state_machine.update_date,
         }
+        if publish:
+            response["stateMachineVersionArn"] = (
+                f"{state_machine.arn}:{state_machine.version}"
+            )
         return 200, {}, json.dumps(response)
 
     def list_tags_for_resource(self) -> TYPE_RESPONSE:
@@ -146,19 +188,26 @@ class StepFunctionResponse(BaseResponse):
         execution = self.stepfunction_backend.describe_execution(arn)
         response = {
             "executionArn": arn,
-            "input": execution.execution_input,
+            "input": json.dumps(execution.execution_input),
             "name": execution.name,
             "startDate": execution.start_date,
             "stateMachineArn": execution.state_machine_arn,
             "status": execution.status,
             "stopDate": execution.stop_date,
         }
+        if execution.status == ExecutionStatus.SUCCEEDED:
+            response["output"] = execution.output
+            response["outputDetails"] = execution.output_details
+        if execution.error is not None:
+            response["error"] = execution.error
+        if execution.cause is not None:
+            response["cause"] = execution.cause
         return 200, {}, json.dumps(response)
 
     def describe_state_machine_for_execution(self) -> TYPE_RESPONSE:
         arn = self._get_param("executionArn")
-        execution = self.stepfunction_backend.describe_execution(arn)
-        return self._describe_state_machine(execution.state_machine_arn)
+        sm = self.stepfunction_backend.describe_state_machine_for_execution(arn)
+        return self._describe_state_machine(sm.arn)
 
     def stop_execution(self) -> TYPE_RESPONSE:
         arn = self._get_param("executionArn")
@@ -173,3 +222,43 @@ class StepFunctionResponse(BaseResponse):
         )
         response = {"events": execution_history}
         return 200, {}, json.dumps(response)
+
+    def send_task_failure(self) -> TYPE_RESPONSE:
+        task_token = self._get_param("taskToken")
+        error = self._get_param("error")
+        self.stepfunction_backend.send_task_failure(task_token, error=error)
+        return 200, {}, "{}"
+
+    def send_task_heartbeat(self) -> TYPE_RESPONSE:
+        task_token = self._get_param("taskToken")
+        self.stepfunction_backend.send_task_heartbeat(task_token)
+        return 200, {}, "{}"
+
+    def send_task_success(self) -> TYPE_RESPONSE:
+        task_token = self._get_param("taskToken")
+        output = self._get_param("output")
+        self.stepfunction_backend.send_task_success(task_token, output)
+        return 200, {}, "{}"
+
+    def list_map_runs(self) -> TYPE_RESPONSE:
+        execution_arn = self._get_param("executionArn")
+        runs = self.stepfunction_backend.list_map_runs(execution_arn)
+        return 200, {}, json.dumps(runs)
+
+    def describe_map_run(self) -> TYPE_RESPONSE:
+        map_run_arn = self._get_param("mapRunArn")
+        run = self.stepfunction_backend.describe_map_run(map_run_arn)
+        return 200, {}, json.dumps(run)
+
+    def update_map_run(self) -> TYPE_RESPONSE:
+        map_run_arn = self._get_param("mapRunArn")
+        max_concurrency = self._get_param("maxConcurrency")
+        tolerated_failure_count = self._get_param("toleratedFailureCount")
+        tolerated_failure_percentage = self._get_param("toleratedFailurePercentage")
+        self.stepfunction_backend.update_map_run(
+            map_run_arn,
+            max_concurrency,
+            tolerated_failure_count=tolerated_failure_count,
+            tolerated_failure_percentage=tolerated_failure_percentage,
+        )
+        return 200, {}, "{}"

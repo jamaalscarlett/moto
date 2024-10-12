@@ -173,6 +173,7 @@ class Instance(TaggedEC2Resource, BotoInstance, CloudFormationModel):
             private_ip=kwargs.get("private_ip"),
             associate_public_ip=self.associate_public_ip,
             security_groups=self.security_groups,
+            ipv6_address_count=kwargs.get("ipv6_address_count"),
         )
 
     @property
@@ -383,7 +384,9 @@ class Instance(TaggedEC2Resource, BotoInstance, CloudFormationModel):
         return self._state.name == "running"
 
     def delete(
-        self, account_id: str, region: str  # pylint: disable=unused-argument
+        self,
+        account_id: str,
+        region: str,  # pylint: disable=unused-argument
     ) -> None:
         self.terminate()
 
@@ -392,6 +395,8 @@ class Instance(TaggedEC2Resource, BotoInstance, CloudFormationModel):
 
         for nic in self.nics.values():
             nic.stop()
+            if nic.delete_on_termination:
+                nic.delete()
 
         self.teardown_defaults()
 
@@ -464,6 +469,7 @@ class Instance(TaggedEC2Resource, BotoInstance, CloudFormationModel):
         private_ip: Optional[str] = None,
         associate_public_ip: Optional[bool] = None,
         security_groups: Optional[List[SecurityGroup]] = None,
+        ipv6_address_count: Optional[int] = None,
     ) -> None:
         self.nics: Dict[int, NetworkInterface] = {}
         for nic in nic_spec:
@@ -536,6 +542,8 @@ class Instance(TaggedEC2Resource, BotoInstance, CloudFormationModel):
                     device_index=device_index,
                     public_ip_auto_assign=nic.get("AssociatePublicIpAddress", False),
                     group_ids=group_ids,
+                    delete_on_termination=nic.get("DeleteOnTermination") == "true",
+                    ipv6_address_count=ipv6_address_count,
                 )
 
             self.attach_eni(use_nic, device_index)
@@ -666,7 +674,8 @@ class InstanceBackend:
                 raise InvalidInstanceTypeError(kwargs["instance_type"])
 
         security_groups = [
-            self.get_security_group_by_name_or_id(name) for name in security_group_names  # type: ignore[attr-defined]
+            self.get_security_group_by_name_or_id(name)  # type: ignore[attr-defined]
+            for name in security_group_names
         ]
 
         for sg_id in kwargs.pop("security_group_ids", []):
@@ -932,5 +941,5 @@ class InstanceBackend:
             )[0]
         )
         version = launch_template_arg.get("Version", template.latest_version_number)
-        template_version = template.get_version(int(version))
+        template_version = template.get_version(version)
         return template_version

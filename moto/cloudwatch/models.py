@@ -119,32 +119,32 @@ class FakeAlarm(BaseModel):
         name: str,
         namespace: str,
         metric_name: str,
-        metric_data_queries: List[MetricDataQuery],
+        metric_data_queries: Optional[List[MetricDataQuery]],
         comparison_operator: str,
         evaluation_periods: int,
-        datapoints_to_alarm: int,
+        datapoints_to_alarm: Optional[int],
         period: int,
         threshold: float,
         statistic: str,
-        extended_statistic: str,
+        extended_statistic: Optional[str],
         description: str,
         dimensions: List[Dict[str, str]],
         alarm_actions: List[str],
-        ok_actions: List[str],
-        insufficient_data_actions: List[str],
-        unit: str,
+        ok_actions: Optional[List[str]],
+        insufficient_data_actions: Optional[List[str]],
+        unit: Optional[str],
         actions_enabled: bool,
-        treat_missing_data: str,
-        evaluate_low_sample_count_percentile: str,
-        threshold_metric_id: str,
-        rule: str,
+        treat_missing_data: Optional[str],
+        evaluate_low_sample_count_percentile: Optional[str],
+        threshold_metric_id: Optional[str],
+        rule: Optional[str],
     ):
         self.region_name = region_name
         self.name = name
         self.alarm_arn = make_arn_for_alarm(region_name, account_id, name)
         self.namespace = namespace
         self.metric_name = metric_name
-        self.metric_data_queries = metric_data_queries
+        self.metric_data_queries = metric_data_queries or []
         self.comparison_operator = comparison_operator
         self.evaluation_periods = evaluation_periods
         self.datapoints_to_alarm = datapoints_to_alarm
@@ -158,8 +158,8 @@ class FakeAlarm(BaseModel):
         ]
         self.actions_enabled = True if actions_enabled is None else actions_enabled
         self.alarm_actions = alarm_actions
-        self.ok_actions = ok_actions
-        self.insufficient_data_actions = insufficient_data_actions
+        self.ok_actions = ok_actions or []
+        self.insufficient_data_actions = insufficient_data_actions or []
         self.unit = unit
         self.configuration_updated_timestamp = iso_8601_datetime_with_nanoseconds()
         self.treat_missing_data = treat_missing_data
@@ -304,9 +304,9 @@ class MetricAggregatedDatum(MetricDatumBase):
 
 
 class Dashboard(BaseModel):
-    def __init__(self, account_id: str, name: str, body: str):
+    def __init__(self, account_id: str, region_name: str, name: str, body: str):
         # Guaranteed to be unique for now as the name is also the key of a dictionary where they are stored
-        self.arn = make_arn_for_dashboard(account_id, name)
+        self.arn = make_arn_for_dashboard(account_id, region_name, name)
         self.name = name
         self.body = body
         self.last_modified = datetime.now()
@@ -442,15 +442,6 @@ class CloudWatchBackend(BaseBackend):
         self.paged_metric_data: Dict[str, List[MetricDatumBase]] = {}
         self.tagger = TaggingService()
 
-    @staticmethod
-    def default_vpc_endpoint_service(
-        service_region: str, zones: List[str]
-    ) -> List[Dict[str, str]]:
-        """Default VPC endpoint service."""
-        return BaseBackend.default_vpc_endpoint_service_factory(
-            service_region, zones, "monitoring"
-        )
-
     @property
     # Retrieve a list of all OOTB metrics that are provided by metrics providers
     # Computed on the fly
@@ -458,7 +449,11 @@ class CloudWatchBackend(BaseBackend):
         providers = CloudWatchMetricProvider.__subclasses__()
         md = []
         for provider in providers:
-            md.extend(provider.get_cloudwatch_metrics(self.account_id))
+            md.extend(
+                provider.get_cloudwatch_metrics(
+                    self.account_id, region=self.region_name
+                )
+            )
         return md
 
     def put_metric_alarm(
@@ -466,26 +461,26 @@ class CloudWatchBackend(BaseBackend):
         name: str,
         namespace: str,
         metric_name: str,
-        metric_data_queries: List[MetricDataQuery],
         comparison_operator: str,
         evaluation_periods: int,
-        datapoints_to_alarm: int,
         period: int,
         threshold: float,
         statistic: str,
-        extended_statistic: str,
         description: str,
         dimensions: List[Dict[str, str]],
         alarm_actions: List[str],
-        ok_actions: List[str],
-        insufficient_data_actions: List[str],
-        unit: str,
-        actions_enabled: bool,
-        treat_missing_data: str,
-        evaluate_low_sample_count_percentile: str,
-        threshold_metric_id: str,
-        rule: str,
-        tags: List[Dict[str, str]],
+        metric_data_queries: Optional[List[MetricDataQuery]] = None,
+        datapoints_to_alarm: Optional[int] = None,
+        extended_statistic: Optional[str] = None,
+        ok_actions: Optional[List[str]] = None,
+        insufficient_data_actions: Optional[List[str]] = None,
+        unit: Optional[str] = None,
+        actions_enabled: bool = True,
+        treat_missing_data: Optional[str] = None,
+        evaluate_low_sample_count_percentile: Optional[str] = None,
+        threshold_metric_id: Optional[str] = None,
+        rule: Optional[str] = None,
+        tags: Optional[List[Dict[str, str]]] = None,
     ) -> FakeAlarm:
         if extended_statistic and not extended_statistic.startswith("p"):
             raise InvalidParameterValue(
@@ -528,11 +523,12 @@ class CloudWatchBackend(BaseBackend):
         )
 
         self.alarms[name] = alarm
-        self.tagger.tag_resource(alarm.alarm_arn, tags)
+        if tags:
+            self.tagger.tag_resource(alarm.alarm_arn, tags)
 
         return alarm
 
-    def get_all_alarms(self) -> Iterable[FakeAlarm]:
+    def describe_alarms(self) -> Iterable[FakeAlarm]:
         return self.alarms.values()
 
     @staticmethod
@@ -663,7 +659,16 @@ class CloudWatchBackend(BaseBackend):
         results = []
         results_to_return = []
         metric_stat_queries = [q for q in queries if "MetricStat" in q]
-        expression_queries = [q for q in queries if "Expression" in q]
+        metric_math_expression_queries = [
+            q
+            for q in queries
+            if "Expression" in q and not q["Expression"].startswith("SELECT")
+        ]
+        metric_insights_expression_queries = [
+            q
+            for q in queries
+            if "Expression" in q and q["Expression"].startswith("SELECT")
+        ]
         for query in metric_stat_queries:
             period_start_time = start_time
             metric_stat = query["MetricStat"]
@@ -734,8 +739,9 @@ class CloudWatchBackend(BaseBackend):
                         "timestamps": timestamps,
                     }
                 )
-        for query in expression_queries:
-            label = query.get("Label") or f"{query_name} {stat}"
+        # Metric Math expression Queries run on top of the results of other queries
+        for query in metric_math_expression_queries:
+            label = query.get("Label") or query["Id"]
             result_vals, timestamps = parse_expression(query["Expression"], results)
             results_to_return.append(
                 {
@@ -745,6 +751,44 @@ class CloudWatchBackend(BaseBackend):
                     "timestamps": timestamps,
                 }
             )
+        # Metric Insights Expression Queries act on all results, and are essentially SQL queries
+        for query in metric_insights_expression_queries:
+            period_start_time = start_time
+            delta = timedelta(seconds=int(query["Period"]))
+            result_vals: List[SupportsFloat] = []  # type: ignore[no-redef]
+            timestamps: List[str] = []  # type: ignore[no-redef]
+            while period_start_time <= end_time:
+                period_end_time = period_start_time + delta
+                period_md = [
+                    period_md
+                    for period_md in period_data
+                    if period_start_time <= period_md.timestamp < period_end_time
+                ]
+
+                # https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch-metrics-insights-querylanguage.html
+                # We should filter even further, but Moto currently does not support Metrics Insights Queries
+                # Let's just add all metric data found within this period
+
+                if len(period_md) > 0:
+                    stats = Statistics(["Sum"], period_start_time)
+                    stats.metric_data = period_md
+                    result_vals.append(stats.get_statistics_for_type("Sum"))  # type: ignore[arg-type]
+
+                    timestamps.append(stats.timestamp)
+                period_start_time += delta
+            if scan_by == "TimestampDescending" and len(timestamps) > 0:
+                timestamps.reverse()
+                result_vals.reverse()
+
+            results_to_return.append(
+                {
+                    "id": query["Id"],
+                    "label": (query.get("Label") or query["Id"]),
+                    "vals": result_vals,
+                    "timestamps": timestamps,
+                }
+            )
+
         return results_to_return
 
     def get_metric_statistics(
@@ -813,7 +857,7 @@ class CloudWatchBackend(BaseBackend):
         return self.metric_data + self.aws_metric_data
 
     def put_dashboard(self, name: str, body: str) -> None:
-        self.dashboards[name] = Dashboard(self.account_id, name, body)
+        self.dashboards[name] = Dashboard(self.account_id, self.region_name, name, body)
 
     def list_dashboards(self, prefix: str = "") -> Iterable[Dashboard]:
         for key, value in self.dashboards.items():
@@ -898,7 +942,7 @@ class CloudWatchBackend(BaseBackend):
     def tag_resource(self, arn: str, tags: List[Dict[str, str]]) -> None:
         # From boto3:
         # Currently, the only CloudWatch resources that can be tagged are alarms and Contributor Insights rules.
-        all_arns = [alarm.alarm_arn for alarm in self.get_all_alarms()]
+        all_arns = [alarm.alarm_arn for alarm in self.describe_alarms()]
         if arn not in all_arns:
             raise ResourceNotFoundException
 

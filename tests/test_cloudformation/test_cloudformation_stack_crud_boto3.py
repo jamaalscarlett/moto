@@ -1,7 +1,9 @@
+import base64
 import copy
 import json
 import os
 import sys
+import uuid
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from unittest import SkipTest
@@ -14,7 +16,7 @@ from moto import mock_aws, settings
 from moto.cloudformation import cloudformation_backends
 from moto.core import DEFAULT_ACCOUNT_ID as ACCOUNT_ID
 from moto.utilities.distutils_version import LooseVersion
-from tests import EXAMPLE_AMI_ID
+from tests import EXAMPLE_AMI_ID, aws_verified
 
 TEST_STACK_NAME = "test_stack"
 REGION_NAME = "us-east-1"
@@ -202,9 +204,19 @@ dummy_empty_template = {
 dummy_parametrized_template = {
     "AWSTemplateFormatVersion": "2010-09-09",
     "Parameters": {
-        "KeyName": {"Description": "A template parameter", "Type": "String"}
+        "BucketName": {"Type": "String"},
+        "KeyName": {"Description": "A template parameter", "Type": "String"},
+        "KeyDesc": {"Description": "Param 2", "Type": "String"},
     },
-    "Resources": {},
+    "Resources": {
+        "Bucket": {
+            "Type": "AWS::S3::Bucket",
+            "Properties": {
+                "BucketName": {"Ref": "BucketName"},
+                "Tags": [{"Key": {"Ref": "KeyName"}, "Value": {"Ref": "KeyDesc"}}],
+            },
+        }
+    },
 }
 
 dummy_update_template = {
@@ -228,16 +240,16 @@ dummy_output_template = {
     "AWSTemplateFormatVersion": "2010-09-09",
     "Description": "Stack 1",
     "Resources": {
-        "Instance": {
-            "Type": "AWS::EC2::Instance",
-            "Properties": {"ImageId": EXAMPLE_AMI_ID},
+        "mybucket": {
+            "Type": "AWS::S3::Bucket",
+            "Properties": {"Tags": [{"Key": "type", "Value": "testbucket"}]},
         }
     },
     "Outputs": {
         "StackVPC": {
             "Description": "The ID of the VPC",
             "Value": "VPCID",
-            "Export": {"Name": "My VPC ID"},
+            "Export": {"Name": "My-VPC-ID"},
         }
     },
 }
@@ -248,7 +260,7 @@ dummy_import_template = {
         "Queue": {
             "Type": "AWS::SQS::Queue",
             "Properties": {
-                "QueueName": {"Fn::ImportValue": "My VPC ID"},
+                "QueueName": {"Fn::ImportValue": "My-VPC-ID"},
                 "VisibilityTimeout": 60,
             },
         }
@@ -301,6 +313,80 @@ dummy_unknown_template = {
     "Description": "Stack 1",
     "Resources": {
         "UnknownResource": {"Type": "AWS::Cloud9::EnvironmentEC2", "Properties": {}},
+    },
+}
+
+dummy_template_launch_template = {
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Trying to create ec2 with auto scaling group",
+    "Parameters": {
+        "Subnets": {
+            "Description": "Pass in the created subnet ids",
+            "Type": "List<AWS::EC2::Subnet::Id>",
+        },
+        "StackName": {"Type": "String", "Description": "Unique stack name"},
+    },
+    "Resources": {
+        "TestLaunchTemplate": {
+            "Type": "AWS::EC2::LaunchTemplate",
+            "Properties": {
+                "LaunchTemplateName": {"Fn::Sub": "${AWS::StackName}-launch-template"},
+                "LaunchTemplateData": {
+                    "BlockDeviceMappings": [
+                        {
+                            "DeviceName": "/dev/xvda",
+                            "Ebs": {
+                                "VolumeType": "gp3",
+                                "VolumeSize": "30",
+                                "DeleteOnTermination": "true",
+                                "Encrypted": "true",
+                            },
+                        }
+                    ],
+                    "ImageId": "ami-12c6146b",
+                    "InstanceType": "t3.micro",
+                },
+                "VersionDescription": "Initial Version",
+            },
+        },
+        "ECSAutoScalingGroup": {
+            "Type": "AWS::AutoScaling::AutoScalingGroup",
+            "Properties": {
+                "VPCZoneIdentifier": {"Ref": "Subnets"},
+                "MixedInstancesPolicy": {
+                    "InstancesDistribution": {
+                        "OnDemandAllocationStrategy": "string",
+                        "OnDemandBaseCapacity": 123,
+                        "OnDemandPercentageAboveBaseCapacity": 123,
+                        "SpotAllocationStrategy": "string",
+                        "SpotInstancePools": 123,
+                        "SpotMaxPrice": "string",
+                    },
+                    "LaunchTemplate": {
+                        "LaunchTemplateSpecification": {
+                            "LaunchTemplateId": {"Ref": "TestLaunchTemplate"},
+                            "Version": "$DEFAULT",
+                        }
+                    },
+                },
+                "CapacityRebalance": True,
+                "MinSize": "1",
+                "MaxSize": "10",
+                "DesiredCapacity": "5",
+            },
+        },
+    },
+}
+
+template_with_base64 = {
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Resources": {
+        "Queue": {
+            "Type": "AWS::SQS::Queue",
+            "Properties": {
+                "Tags": [{"Key": "baseencodedtag", "Value": {"Fn::Base64": "value"}}]
+            },
+        }
     },
 }
 
@@ -425,9 +511,17 @@ def test_stop_stack_set_operation():
 
 
 @mock_aws
-def test_describe_stack_set_operation():
-    cf = boto3.client("cloudformation", region_name=REGION_NAME)
-    cf.create_stack_set(StackSetName="name", TemplateBody=dummy_template_json)
+@pytest.mark.parametrize(
+    "region,partition", [(REGION_NAME, "aws"), ("cn-north-1", "aws-cn")]
+)
+@pytest.mark.parametrize("include_role", [True, False])
+def test_describe_stack_set_operation(region, partition, include_role):
+    cf = boto3.client("cloudformation", region_name=region)
+    kwargs = (
+        {"AdministrationRoleARN": "arn:my_role_with_long_name"} if include_role else {}
+    )
+    cf.create_stack_set(StackSetName="name", TemplateBody=dummy_template_json, **kwargs)
+
     operation_id = cf.create_stack_instances(
         StackSetName="name",
         Accounts=[ACCOUNT_ID],
@@ -435,12 +529,20 @@ def test_describe_stack_set_operation():
     )["OperationId"]
 
     cf.stop_stack_set_operation(StackSetName="name", OperationId=operation_id)
-    response = cf.describe_stack_set_operation(
+    stack_set_op = cf.describe_stack_set_operation(
         StackSetName="name", OperationId=operation_id
-    )
+    )["StackSetOperation"]
 
-    assert response["StackSetOperation"]["Status"] == "STOPPED"
-    assert response["StackSetOperation"]["Action"] == "CREATE"
+    if include_role:
+        assert stack_set_op["AdministrationRoleARN"] == "arn:my_role_with_long_name"
+    else:
+        assert (
+            stack_set_op["AdministrationRoleARN"]
+            == f"arn:{partition}:iam::123456789012:role/AWSCloudFormationStackSetAdministrationRole"
+        )
+    assert stack_set_op["Status"] == "STOPPED"
+    assert stack_set_op["Action"] == "CREATE"
+
     with pytest.raises(ClientError) as exp:
         cf.describe_stack_set_operation(
             StackSetName="name", OperationId="non_existing_operation"
@@ -790,6 +892,21 @@ def test_create_stack_set():
 
 
 @mock_aws
+@pytest.mark.parametrize(
+    "region,partition", [(REGION_NAME, "aws"), ("cn-north-1", "aws-cn")]
+)
+def test_create_stack_set__without_admin_role(region, partition):
+    cf = boto3.client("cloudformation", region_name=region)
+    cf.create_stack_set(StackSetName="teststackset", TemplateBody=dummy_template_json)
+
+    stack_set = cf.describe_stack_set(StackSetName="teststackset")["StackSet"]
+    assert (
+        stack_set["AdministrationRoleARN"]
+        == f"arn:{partition}:iam::{ACCOUNT_ID}:role/AWSCloudFormationStackSetAdministrationRole"
+    )
+
+
+@mock_aws
 @pytest.mark.parametrize("name", ["1234", "stack_set", "-set"])
 def test_create_stack_set__invalid_name(name):
     client = boto3.client("cloudformation", region_name=REGION_NAME)
@@ -878,7 +995,7 @@ def test_describe_stack_set_by_id():
 def test_create_stack_fail_missing_parameter():
     cf = boto3.client("cloudformation", region_name=REGION_NAME)
 
-    with pytest.raises(ClientError, match="Missing parameter KeyName"):
+    with pytest.raises(ClientError, match="Missing parameter BucketName"):
         cf.create_stack(StackName="ts", TemplateBody=dummy_parametrized_template_json)
 
 
@@ -974,7 +1091,7 @@ def test_get_template_summary_for_stack_created_by_changeset_execution():
     conn.create_change_set(
         StackName="stack_from_changeset",
         TemplateBody=json.dumps(dummy_template3),
-        ChangeSetName="test_changeset",
+        ChangeSetName="test-changeset",
         ChangeSetType="CREATE",
     )
     with pytest.raises(
@@ -982,7 +1099,7 @@ def test_get_template_summary_for_stack_created_by_changeset_execution():
         match="GetTemplateSummary cannot be called on REVIEW_IN_PROGRESS stacks",
     ):
         conn.get_template_summary(StackName="stack_from_changeset")
-    conn.execute_change_set(ChangeSetName="test_changeset")
+    conn.execute_change_set(ChangeSetName="test-changeset")
     result = conn.get_template_summary(StackName="stack_from_changeset")
     assert result["ResourceTypes"] == ["AWS::EC2::VPC"]
     assert result["Version"] == "2010-09-09"
@@ -1165,7 +1282,7 @@ def test_update_stack_fail_missing_new_parameter():
 
     cf.create_stack(StackName=name, TemplateBody=dummy_empty_template_json)
 
-    with pytest.raises(ClientError, match="Missing parameter KeyName"):
+    with pytest.raises(ClientError, match="Missing parameter BucketName"):
         cf.update_stack(StackName=name, TemplateBody=dummy_parametrized_template_json)
 
 
@@ -1267,39 +1384,111 @@ def test_update_stack_deleted_resources_can_reference_deleted_resources():
     assert len(response["StackResources"]) == 0
 
 
-@mock_aws
+@pytest.mark.aws_verified
+@aws_verified
 def test_update_stack_with_previous_value():
-    name = "update_stack_with_previous_value"
+    name = f"update-stack-with-previous-value-{str(uuid.uuid4())[0:6]}"
+    bucket_name = str(uuid.uuid4())
     cf = boto3.client("cloudformation", region_name=REGION_NAME)
+    s3 = boto3.client("s3", REGION_NAME)
     cf.create_stack(
         StackName=name,
-        TemplateBody=dummy_template_yaml_with_ref,
+        TemplateBody=dummy_parametrized_template_json,
         Parameters=[
-            {"ParameterKey": "TagName", "ParameterValue": "foo"},
-            {"ParameterKey": "TagDescription", "ParameterValue": "bar"},
+            {"ParameterKey": "BucketName", "ParameterValue": bucket_name},
+            {"ParameterKey": "KeyName", "ParameterValue": "foo"},
+            {"ParameterKey": "KeyDesc", "ParameterValue": "bar"},
         ],
     )
-    cf.update_stack(
-        StackName=name,
-        UsePreviousTemplate=True,
-        Parameters=[
-            {"ParameterKey": "TagName", "UsePreviousValue": True},
-            {"ParameterKey": "TagDescription", "ParameterValue": "not bar"},
-        ],
-    )
+    waiter = cf.get_waiter("stack_create_complete")
+    waiter.wait(StackName=name)
+
+    # Verify that correct parameters are used
     stack = cf.describe_stacks(StackName=name)["Stacks"][0]
-    tag_name = [
-        x["ParameterValue"]
-        for x in stack["Parameters"]
-        if x["ParameterKey"] == "TagName"
-    ][0]
-    tag_desc = [
-        x["ParameterValue"]
-        for x in stack["Parameters"]
-        if x["ParameterKey"] == "TagDescription"
-    ][0]
-    assert tag_name == "foo"
-    assert tag_desc == "not bar"
+    assert {"ParameterKey": "KeyName", "ParameterValue": "foo"} in stack["Parameters"]
+    assert {"ParameterKey": "KeyDesc", "ParameterValue": "bar"} in stack["Parameters"]
+
+    # Verify that correct parameters are applied
+    tags = s3.get_bucket_tagging(Bucket=bucket_name)["TagSet"]
+    assert {"Key": "foo", "Value": "bar"} in tags
+
+    try:
+        cf.update_stack(
+            StackName=name,
+            UsePreviousTemplate=True,
+            Parameters=[
+                {"ParameterKey": "BucketName", "UsePreviousValue": True},
+                {"ParameterKey": "KeyName", "UsePreviousValue": True},
+                {"ParameterKey": "KeyDesc", "ParameterValue": "not bar"},
+            ],
+        )
+        waiter = cf.get_waiter("stack_update_complete")
+        waiter.wait(StackName=name)
+
+        # Verify that correct parameters are used
+        params = cf.describe_stacks(StackName=name)["Stacks"][0]["Parameters"]
+        assert {"ParameterKey": "KeyName", "ParameterValue": "foo"} in params
+        assert {"ParameterKey": "KeyDesc", "ParameterValue": "not bar"} in params
+
+        # Verify that correct parameters are applied
+        tags = s3.get_bucket_tagging(Bucket=bucket_name)["TagSet"]
+        assert {"Key": "foo", "Value": "not bar"} in tags
+
+        # Update Stack - Can't specify ParameterValue and UsePreviousValue
+        with pytest.raises(ClientError) as exc:
+            cf.update_stack(
+                StackName=name,
+                UsePreviousTemplate=True,
+                Parameters=[
+                    {"ParameterKey": "BucketName", "UsePreviousValue": True},
+                    {"ParameterKey": "KeyName", "ParameterValue": "foo2"},
+                    {
+                        "ParameterKey": "KeyDesc",
+                        "UsePreviousValue": True,
+                        "ParameterValue": "n/a",
+                    },
+                ],
+            )
+        err = exc.value.response["Error"]
+        assert err["Code"] == "ValidationError"
+        assert (
+            err["Message"]
+            == "Invalid input for parameter key KeyDesc. Cannot specify usePreviousValue as true and non empty value for a parameter"
+        )
+
+        # UsePreviousValue=True can be used if value is empty
+        # UsePreviousValue=False just means - use the new value
+        cf.update_stack(
+            StackName=name,
+            UsePreviousTemplate=True,
+            Parameters=[
+                {"ParameterKey": "BucketName", "UsePreviousValue": True},
+                {
+                    "ParameterKey": "KeyName",
+                    "ParameterValue": "foo2",
+                    "UsePreviousValue": False,
+                },
+                {
+                    "ParameterKey": "KeyDesc",
+                    "UsePreviousValue": True,
+                    "ParameterValue": "",
+                },
+            ],
+        )
+        waiter = cf.get_waiter("stack_update_complete")
+        waiter.wait(StackName=name)
+
+        # Verify that correct parameters are used
+        params = cf.describe_stacks(StackName=name)["Stacks"][0]["Parameters"]
+        assert {"ParameterKey": "KeyName", "ParameterValue": "foo2"} in params
+        assert {"ParameterKey": "KeyDesc", "ParameterValue": "not bar"} in params
+
+        # Verify that correct parameters are applied
+        tags = s3.get_bucket_tagging(Bucket=bucket_name)["TagSet"]
+        assert {"Key": "foo2", "Value": "not bar"} in tags
+
+    finally:
+        cf.delete_stack(StackName=name)
 
 
 @mock_aws
@@ -1591,6 +1780,34 @@ def test_delete_stack_from_resource():
 
     assert len(list(cf.stacks.all())) == 1
     stack.delete()
+    assert len(list(cf.stacks.all())) == 0
+
+    ec2 = boto3.resource("ec2", region_name=REGION_NAME)
+    vpc = ec2.create_vpc(CidrBlock="10.11.0.0/16")
+    subnet1 = ec2.create_subnet(
+        VpcId=vpc.id, CidrBlock="10.11.1.0/24", AvailabilityZone=f"{REGION_NAME}a"
+    )
+    subnet2 = ec2.create_subnet(
+        VpcId=vpc.id, CidrBlock="10.11.2.0/24", AvailabilityZone=f"{REGION_NAME}b"
+    )
+
+    new_stack = cf.create_stack(
+        StackName=TEST_STACK_NAME,
+        TemplateBody=json.dumps(dummy_template_launch_template),
+        Parameters=[
+            {
+                "ParameterKey": "Subnets",
+                "ParameterValue": f"{subnet1.id},{subnet2.id}",
+                "ResolvedValue": "string",
+            },
+            {
+                "ParameterKey": "StackName",
+                "ParameterValue": TEST_STACK_NAME,
+                "ResolvedValue": "string",
+            },
+        ],
+    )
+    new_stack.delete()
     assert len(list(cf.stacks.all())) == 0
 
 
@@ -2121,23 +2338,33 @@ def test_stack_events():
     assert exp_metadata.get("HTTPStatusCode") == 400
 
 
-@mock_aws
+@pytest.mark.aws_verified
+@aws_verified
 def test_list_exports():
     cf_client = boto3.client("cloudformation", region_name=REGION_NAME)
     cf_resource = boto3.resource("cloudformation", region_name=REGION_NAME)
+    stack_name = f"mototest-with-exports-{str(uuid.uuid4())[0:6]}"
     stack = cf_resource.create_stack(
-        StackName=TEST_STACK_NAME, TemplateBody=dummy_output_template_json
+        StackName=stack_name, TemplateBody=dummy_output_template_json
     )
+    waiter = cf_client.get_waiter("stack_create_complete")
+    waiter.wait(StackName=stack_name)
     output_value = "VPCID"
-    exports = cf_client.list_exports()["Exports"]
+    try:
+        assert len(stack.outputs) == 1
+        assert stack.outputs[0]["OutputKey"] == "StackVPC"
+        assert stack.outputs[0]["OutputValue"] == output_value
+        assert stack.outputs[0]["Description"] == "The ID of the VPC"
+        assert stack.outputs[0]["ExportName"] == "My-VPC-ID"
 
-    assert len(stack.outputs) == 1
-    assert stack.outputs[0]["OutputValue"] == output_value
+        exports = cf_client.list_exports()["Exports"]
 
-    assert len(exports) == 1
-    assert exports[0]["ExportingStackId"] == stack.stack_id
-    assert exports[0]["Name"] == "My VPC ID"
-    assert exports[0]["Value"] == output_value
+        assert len(exports) == 1
+        assert exports[0]["ExportingStackId"] == stack.stack_id
+        assert exports[0]["Name"] == "My-VPC-ID"
+        assert exports[0]["Value"] == output_value
+    finally:
+        cf_client.delete_stack(StackName=stack_name)
 
 
 @mock_aws
@@ -2339,6 +2566,67 @@ def test_create_and_update_stack_with_unknown_resource():
             cf.update_stack(
                 StackName=TEST_STACK_NAME, TemplateBody=json.dumps(new_template)
             )
+
+
+@mock_aws
+def test_invalid_change_set_name_starting_char():
+    cf = boto3.client("cloudformation", region_name=REGION_NAME)
+    with pytest.raises(ClientError):
+        cf.create_change_set(
+            StackName=TEST_STACK_NAME,
+            ChangeSetName="1invalid-change-set-name",
+            TemplateBody=json.dumps(dummy_template),
+            Description="Test Change Set",
+            ChangeSetType="CREATE",
+        )
+
+
+@mock_aws
+def test_invalid_change_set_name_length():
+    cf = boto3.client("cloudformation", region_name=REGION_NAME)
+    long_name = "a" * 129  # Exceeds the 128 character limit
+    with pytest.raises(ClientError):
+        cf.create_change_set(
+            StackName=TEST_STACK_NAME,
+            ChangeSetName=long_name,
+            TemplateBody=json.dumps(dummy_template),
+            Description="Test Change Set",
+            ChangeSetType="CREATE",
+        )
+
+
+@mock_aws
+def test_invalid_change_set_name_special_chars():
+    cf = boto3.client("cloudformation", region_name=REGION_NAME)
+    with pytest.raises(ClientError):
+        cf.create_change_set(
+            StackName=TEST_STACK_NAME,
+            ChangeSetName="invalid@name",
+            TemplateBody=json.dumps(dummy_template),
+            Description="Test Change Set",
+            ChangeSetType="CREATE",
+        )
+
+
+@pytest.mark.aws_verified
+@aws_verified
+def test_base64_function():
+    name = f"stack-{str(uuid.uuid4())[0:6]}"
+    cf = boto3.client("cloudformation", region_name=REGION_NAME)
+    sqs = boto3.client("sqs", REGION_NAME)
+    cf.create_stack(StackName=name, TemplateBody=json.dumps(template_with_base64))
+    waiter = cf.get_waiter("stack_create_complete")
+    waiter.wait(StackName=name)
+
+    qurl = sqs.list_queues(QueueNamePrefix=name)["QueueUrls"][0]
+
+    expected = base64.b64encode(b"value").decode("utf-8")
+    tags = sqs.list_queue_tags(QueueUrl=qurl)["Tags"]
+    assert tags == {"baseencodedtag": expected}
+
+    cf.delete_stack(StackName=name)
+    waiter = cf.get_waiter("stack_delete_complete")
+    waiter.wait(StackName=name)
 
 
 def get_role_name():

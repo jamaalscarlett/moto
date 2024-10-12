@@ -30,6 +30,7 @@ from moto.iam.exceptions import MalformedPolicyDocument
 from moto.iam.policy_validation import IAMPolicyDocumentValidator
 from moto.moto_api._internal import mock_random as random
 from moto.utilities.tagging_service import TaggingService
+from moto.utilities.utils import get_partition
 
 ECR_REPOSITORY_ARN_PATTERN = "^arn:(?P<partition>[^:]+):ecr:(?P<region>[^:]+):(?P<account_id>[^:]+):repository/(?P<repo_name>.*)$"
 ECR_REPOSITORY_NAME_PATTERN = (
@@ -79,9 +80,7 @@ class Repository(BaseObject, CloudFormationModel):
         self.account_id = account_id
         self.region_name = region_name
         self.registry_id = registry_id or account_id
-        self.arn = (
-            f"arn:aws:ecr:{region_name}:{self.registry_id}:repository/{repository_name}"
-        )
+        self.arn = f"arn:{get_partition(region_name)}:ecr:{region_name}:{self.registry_id}:repository/{repository_name}"
         self.name = repository_name
         self.created_at = utcnow()
         self.uri = (
@@ -109,9 +108,9 @@ class Repository(BaseObject, CloudFormationModel):
         if not encryption_config:
             return {"encryptionType": "AES256"}
         if encryption_config == {"encryptionType": "KMS"}:
-            encryption_config[
-                "kmsKey"
-            ] = f"arn:aws:kms:{self.region_name}:{self.account_id}:key/{random.uuid4()}"
+            encryption_config["kmsKey"] = (
+                f"arn:{get_partition(self.region_name)}:kms:{self.region_name}:{self.account_id}:key/{random.uuid4()}"
+            )
         return encryption_config
 
     def _get_image(
@@ -372,7 +371,9 @@ class Image(BaseObject):
             "registryId": self.registry_id,
         }
         return {
-            k: v for k, v in response_object.items() if v is not None and v != [None]  # type: ignore
+            k: v
+            for k, v in response_object.items()
+            if v is not None and v != [None]  # type: ignore
         }
 
     @property
@@ -381,7 +382,9 @@ class Image(BaseObject):
         response_object["imageDigest"] = self.get_image_digest()
         response_object["imageTag"] = self.image_tag
         return {
-            k: v for k, v in response_object.items() if v is not None and v != [None]  # type: ignore
+            k: v
+            for k, v in response_object.items()
+            if v is not None and v != [None]  # type: ignore
         }
 
 
@@ -399,7 +402,9 @@ class ECRBackend(BaseBackend):
         self.tagger = TaggingService(tag_name="tags")
 
     @staticmethod
-    def default_vpc_endpoint_service(service_region: str, zones: List[str]) -> List[Dict[str, Any]]:  # type: ignore[misc]
+    def default_vpc_endpoint_service(  # type: ignore[misc]
+        service_region: str, zones: List[str]
+    ) -> List[Dict[str, Any]]:
         """Default VPC endpoint service."""
         docker_endpoint = {
             "AcceptanceRequired": False,
@@ -757,7 +762,6 @@ class ECRBackend(BaseBackend):
                     continue
 
             for num, image in enumerate(repository.images):
-
                 # Search by matching both digest and tag
                 if "imageDigest" in image_id and "imageTag" in image_id:
                     if (

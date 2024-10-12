@@ -48,13 +48,14 @@ lambda
 - [ ] delete_provisioned_concurrency_config
 - [ ] get_account_settings
 - [X] get_alias
-- [X] get_code_signing_config
+- [ ] get_code_signing_config
 - [X] get_event_source_mapping
 - [X] get_function
-- [ ] get_function_code_signing_config
+- [X] get_function_code_signing_config
 - [X] get_function_concurrency
 - [ ] get_function_configuration
 - [X] get_function_event_invoke_config
+- [ ] get_function_recursion_config
 - [X] get_function_url_config
   
         The Qualifier-parameter is not yet implemented
@@ -69,6 +70,26 @@ lambda
 - [X] invoke
   
         Invoking a Function with PackageType=Image is not yet supported.
+
+        Invoking a Funcation against Lambda without docker now supports customised responses, the default being `Simple Lambda happy path OK`.
+        You can use a dedicated API to override this, by configuring a queue of expected results.
+
+        A request to `invoke` will take the first result from that queue.
+
+        Configure this queue by making an HTTP request to `/moto-api/static/lambda-simple/response`. An example invocation looks like this:
+
+        .. sourcecode:: python
+
+            expected_results = {"results": ["test", "test 2"], "region": "us-east-1"}
+            resp = requests.post(
+                "http://motoapi.amazonaws.com/moto-api/static/lambda-simple/response",
+                json=expected_results
+            )
+            assert resp.status_code == 201
+
+            client = boto3.client("lambda", region_name="us-east-1")
+            resp = client.invoke(...) # resp["Payload"].read().decode() == "test"
+            resp = client.invoke(...) # resp["Payload"].read().decode() == "test2"
         
 
 - [ ] invoke_async
@@ -80,13 +101,13 @@ lambda
 - [ ] list_function_url_configs
 - [X] list_functions
 - [ ] list_functions_by_code_signing_config
-- [ ] list_layer_versions
+- [X] list_layer_versions
 - [X] list_layers
 - [ ] list_provisioned_concurrency_configs
 - [X] list_tags
 - [X] list_versions_by_function
 - [X] publish_layer_version
-- [ ] publish_version
+- [X] publish_version
 - [ ] put_function_code_signing_config
 - [X] put_function_concurrency
   Establish concurrency limit/reservations for a function
@@ -103,6 +124,7 @@ lambda
         
 
 - [X] put_function_event_invoke_config
+- [ ] put_function_recursion_config
 - [ ] put_provisioned_concurrency_config
 - [ ] put_runtime_management_config
 - [ ] remove_layer_version_permission

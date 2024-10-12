@@ -1,9 +1,9 @@
 import json
-import os
 import re
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
-from moto.core.responses import BaseResponse
+from moto.core.responses import TYPE_RESPONSE, BaseResponse
+from moto.utilities.utils import load_resource
 
 from .exceptions import InvalidParameterException
 from .models import (
@@ -307,8 +307,15 @@ class CognitoIdpResponse(BaseResponse):
     def admin_list_groups_for_user(self) -> str:
         username = self._get_param("Username")
         user_pool_id = self._get_param("UserPoolId")
-        groups = self.backend.admin_list_groups_for_user(user_pool_id, username)
-        return json.dumps({"Groups": [group.to_json() for group in groups]})
+        limit = self._get_param("Limit")
+        token = self._get_param("NextToken")
+        groups, token = self.backend.admin_list_groups_for_user(
+            user_pool_id, username, limit=limit, next_token=token
+        )
+        response = {"Groups": [group.to_json() for group in groups]}
+        if token:
+            response["NextToken"] = token
+        return json.dumps(response)
 
     def admin_remove_user_from_group(self) -> str:
         user_pool_id = self._get_param("UserPoolId")
@@ -482,9 +489,9 @@ class CognitoIdpResponse(BaseResponse):
         confirmation_code, response = cognitoidp_backends[account][
             region
         ].forgot_password(client_id, username)
-        self.response_headers[
-            "x-moto-forgot-password-confirmation-code"
-        ] = confirmation_code  # type: ignore[assignment]
+        self.response_headers["x-moto-forgot-password-confirmation-code"] = (
+            confirmation_code  # type: ignore[assignment]
+        )
         return json.dumps(response)
 
     # This endpoint receives no authorization header, so if moto-server is listening
@@ -581,18 +588,19 @@ class CognitoIdpResponse(BaseResponse):
         client_id = self._get_param("ClientId")
         username = self._get_param("Username")
         password = self._get_param("Password")
-        user = self._get_region_agnostic_backend().sign_up(
+        user, code_delivery_details = self._get_region_agnostic_backend().sign_up(
             client_id=client_id,
             username=username,
             password=password,
             attributes=self._get_param("UserAttributes", []),
         )
-        return json.dumps(
-            {
-                "UserConfirmed": user.status == UserStatus["CONFIRMED"],
-                "UserSub": user.id,
-            }
-        )
+        response = {
+            "UserConfirmed": user.status == UserStatus["CONFIRMED"],
+            "UserSub": user.id,
+        }
+        if code_delivery_details:
+            response["CodeDeliveryDetails"] = code_delivery_details
+        return json.dumps(response)
 
     def confirm_sign_up(self) -> str:
         client_id = self._get_param("ClientId")
@@ -615,12 +623,14 @@ class CognitoIdpResponse(BaseResponse):
 
     def associate_software_token(self) -> str:
         access_token = self._get_param("AccessToken")
-        result = self.backend.associate_software_token(access_token)
+        session = self._get_param("Session")
+        result = self.backend.associate_software_token(access_token, session)
         return json.dumps(result)
 
     def verify_software_token(self) -> str:
         access_token = self._get_param("AccessToken")
-        result = self.backend.verify_software_token(access_token)
+        session = self._get_param("Session")
+        result = self.backend.verify_software_token(access_token, session)
         return json.dumps(result)
 
     def set_user_mfa_preference(self) -> str:
@@ -666,16 +676,17 @@ class CognitoIdpResponse(BaseResponse):
 
 
 class CognitoIdpJsonWebKeyResponse(BaseResponse):
-    def __init__(self) -> None:
-        with open(
-            os.path.join(os.path.dirname(__file__), "resources/jwks-public.json")
-        ) as f:
-            self.json_web_key = f.read()
+    json_web_key = json.dumps(
+        load_resource(__name__, "resources/jwks-public.json")
+    ).encode("utf-8")
 
-    def serve_json_web_key(
-        self,
-        request: Any,  # pylint: disable=unused-argument
-        full_url: str,  # pylint: disable=unused-argument
-        headers: Any,  # pylint: disable=unused-argument
-    ) -> Tuple[int, Dict[str, str], str]:
-        return 200, {"Content-Type": "application/json"}, self.json_web_key
+    def __init__(self) -> None:
+        super().__init__(service_name="cognito-idp")
+
+    @staticmethod
+    def serve_json_web_key(*args) -> TYPE_RESPONSE:  # type: ignore
+        return (
+            200,
+            {"Content-Type": "application/json"},
+            CognitoIdpJsonWebKeyResponse.json_web_key,
+        )

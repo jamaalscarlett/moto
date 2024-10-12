@@ -682,9 +682,9 @@ def test_update_stack_listener_and_rule():
 
     elbv2_conn = boto3.client("elbv2", "us-west-1")
 
-    initial_template["Resources"]["rule"]["Properties"]["Conditions"][0][
-        "Field"
-    ] = "host-header"
+    initial_template["Resources"]["rule"]["Properties"]["Conditions"][0]["Field"] = (
+        "host-header"
+    )
     initial_template["Resources"]["rule"]["Properties"]["Conditions"][0]["Values"] = "*"
     initial_template["Resources"]["listener"]["Properties"]["Port"] = 90
 
@@ -1045,7 +1045,7 @@ def test_stack_dynamodb_resources_integration():
 
 @mock_aws
 def test_create_log_group_using_fntransform():
-    s3_resource = boto3.resource("s3")
+    s3_resource = boto3.resource("s3", "us-west-2")
     s3_resource.create_bucket(
         Bucket="owi-common-cf",
         CreateBucketConfiguration={"LocationConstraint": "us-west-2"},
@@ -1710,9 +1710,9 @@ def test_ssm_parameter_update_stack():
     assert parameters[0]["Name"] == "test_ssm"
     assert parameters[0]["Value"] == "Test SSM Parameter"
 
-    parameter_template["Resources"]["BasicParameter"]["Properties"][
-        "Value"
-    ] = "Test SSM Parameter Updated"
+    parameter_template["Resources"]["BasicParameter"]["Properties"]["Value"] = (
+        "Test SSM Parameter Updated"
+    )
     cfn.update_stack(StackName=stack_name, TemplateBody=json.dumps(parameter_template))
 
     ssm_client = boto3.client("ssm", region_name="us-west-2")

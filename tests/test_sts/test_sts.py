@@ -67,7 +67,8 @@ def test_get_federation_token_boto3():
 @freeze_time("2012-01-01 12:00:00")
 @mock_aws
 @pytest.mark.parametrize(
-    "region,partition", [("us-east-1", "aws"), ("cn-north-1", "aws-cn")]
+    "region,partition",
+    [("us-east-1", "aws"), ("cn-north-1", "aws-cn"), ("us-isob-east-1", "aws-iso-b")],
 )
 def test_assume_role(region, partition):
     client = boto3.client("sts", region_name=region)
@@ -199,9 +200,7 @@ def test_assume_role_with_saml():
       </AuthnContext>
     </AuthnStatement>
   </Assertion>
-</samlp:Response>""".replace(
-        "\n", ""
-    )
+</samlp:Response>""".replace("\n", "")
 
     assume_role_response = client.assume_role_with_saml(
         RoleArn=role_input,
@@ -297,9 +296,7 @@ def test_assume_role_with_saml_should_not_rely_on_attribute_order():
       </AuthnContext>
     </AuthnStatement>
   </Assertion>
-</samlp:Response>""".replace(
-        "\n", ""
-    )
+</samlp:Response>""".replace("\n", "")
 
     assume_role_response = client.assume_role_with_saml(
         RoleArn=role_input,
@@ -383,9 +380,7 @@ def test_assume_role_with_saml_should_respect_xml_namespaces():
       </saml:AuthnContext>
     </saml:AuthnStatement>
   </saml:Assertion>
-</samlp:Response>""".replace(
-        "\n", ""
-    )
+</samlp:Response>""".replace("\n", "")
 
     assume_role_response = client.assume_role_with_saml(
         RoleArn=role_input,
@@ -480,9 +475,7 @@ def test_assume_role_with_saml_when_xml_tag_contains_xmlns_attributes():
       </saml:AuthnContext>
     </saml:AuthnStatement>
   </saml:Assertion>
-</samlp:Response>""".replace(
-        "\n", ""
-    )
+</samlp:Response>""".replace("\n", "")
 
     assume_role_response = client.assume_role_with_saml(
         RoleArn=role_input,
@@ -568,9 +561,7 @@ def test_assume_role_with_saml_when_saml_attribute_not_provided():
       </AuthnContext>
     </AuthnStatement>
   </Assertion>
-</samlp:Response>""".replace(
-        "\n", ""
-    )
+</samlp:Response>""".replace("\n", "")
 
     assume_role_response = client.assume_role_with_saml(
         RoleArn=role_input,
@@ -703,7 +694,7 @@ def test_get_caller_identity_with_assumed_role_credentials(region, partition):
 
     identity = boto3.client(
         "sts",
-        region_name="us-east-1",
+        region_name=region,
         aws_access_key_id=access_key["AccessKeyId"],
         aws_secret_access_key=access_key["SecretAccessKey"],
     ).get_caller_identity()
@@ -748,3 +739,10 @@ def test_sts_regions(region):
     client = boto3.client("sts", region_name=region)
     resp = client.get_caller_identity()
     assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
+
+    if region == "us-west-2":
+        assert resp["Arn"] == f"arn:aws:sts::{ACCOUNT_ID}:user/moto"
+    if region == "cn-northwest-1":
+        assert resp["Arn"] == f"arn:aws-cn:sts::{ACCOUNT_ID}:user/moto"
+    if region == "us-isob-east-1":
+        assert resp["Arn"] == f"arn:aws-iso-b:sts::{ACCOUNT_ID}:user/moto"
