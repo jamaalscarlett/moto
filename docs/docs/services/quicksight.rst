@@ -16,6 +16,8 @@ quicksight
 
 |start-h3| Implemented features for this service |end-h3|
 
+- [ ] batch_create_topic_reviewed_answer
+- [ ] batch_delete_topic_reviewed_answer
 - [ ] cancel_ingestion
 - [ ] create_account_customization
 - [ ] create_account_subscription
@@ -93,6 +95,7 @@ quicksight
 - [ ] describe_ip_restriction
 - [ ] describe_key_registration
 - [ ] describe_namespace
+- [ ] describe_q_personalization_configuration
 - [ ] describe_refresh_schedule
 - [ ] describe_role_custom_permission
 - [ ] describe_template
@@ -121,6 +124,7 @@ quicksight
 - [ ] list_data_sources
 - [ ] list_folder_members
 - [ ] list_folders
+- [ ] list_folders_for_resource
 - [X] list_group_memberships
   
         The NextToken and MaxResults parameters are not yet implemented
@@ -146,6 +150,7 @@ quicksight
 - [ ] list_theme_versions
 - [ ] list_themes
 - [ ] list_topic_refresh_schedules
+- [ ] list_topic_reviewed_answers
 - [ ] list_topics
 - [ ] list_user_groups
 - [X] list_users
@@ -193,6 +198,7 @@ quicksight
 - [ ] update_ip_restriction
 - [ ] update_key_registration
 - [ ] update_public_sharing_settings
+- [ ] update_q_personalization_configuration
 - [ ] update_refresh_schedule
 - [ ] update_role_custom_permission
 - [ ] update_spice_capacity_configuration

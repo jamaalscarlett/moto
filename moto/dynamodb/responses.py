@@ -16,6 +16,7 @@ from moto.utilities.aws_headers import amz_crc32
 from .exceptions import (
     KeyIsEmptyStringException,
     MockValidationException,
+    ProvidedKeyDoesNotExist,
     ResourceNotFoundException,
     UnknownKeyType,
 )
@@ -53,28 +54,25 @@ def include_consumed_capacity(
 
             response = f(*args, **kwargs)
 
-            if isinstance(response, str):
-                body = json.loads(response)
+            body = json.loads(response)
 
-                if expected_capacity == "TOTAL":
-                    body["ConsumedCapacity"] = {
-                        "TableName": table_name,
-                        "CapacityUnits": val,
+            if expected_capacity == "TOTAL":
+                body["ConsumedCapacity"] = {
+                    "TableName": table_name,
+                    "CapacityUnits": val,
+                }
+            elif expected_capacity == "INDEXES":
+                body["ConsumedCapacity"] = {
+                    "TableName": table_name,
+                    "CapacityUnits": val,
+                    "Table": {"CapacityUnits": val},
+                }
+                if index_name:
+                    body["ConsumedCapacity"]["LocalSecondaryIndexes"] = {
+                        index_name: {"CapacityUnits": val}
                     }
-                elif expected_capacity == "INDEXES":
-                    body["ConsumedCapacity"] = {
-                        "TableName": table_name,
-                        "CapacityUnits": val,
-                        "Table": {"CapacityUnits": val},
-                    }
-                    if index_name:
-                        body["ConsumedCapacity"]["LocalSecondaryIndexes"] = {
-                            index_name: {"CapacityUnits": val}
-                        }
 
-                return dynamo_json_dump(body)
-
-            return response
+            return dynamo_json_dump(body)
 
         return _wrapper
 
@@ -122,23 +120,24 @@ def validate_put_has_empty_keys(
             raise MockValidationException(msg.format(empty_key))
 
 
-def put_has_empty_attrs(field_updates: Dict[str, Any], table: Table) -> bool:
+def validate_put_has_empty_attrs(field_updates: Dict[str, Any], table: Table) -> None:
     # Example invalid attribute: [{'M': {'SS': {'NS': []}}}]
-    def _validate_attr(attr: Dict[str, Any]) -> bool:
-        if "NS" in attr and attr["NS"] == []:
-            return True
+    def _validate_attr(attr: Dict[str, Any]) -> None:
+        for set_type, error in [("NS", "number"), ("SS", "string")]:
+            if set_type in attr and attr[set_type] == []:
+                raise MockValidationException(
+                    f"One or more parameter values were invalid: An {error} set  may not be empty"
+                )
+
         else:
-            return any(
-                [_validate_attr(val) for val in attr.values() if isinstance(val, dict)]
-            )
+            for val in attr.values():
+                if isinstance(val, dict):
+                    _validate_attr(val)
 
     if table:
-        key_names = table.attribute_keys
-        attrs_to_check = [
-            val for attr, val in field_updates.items() if attr not in key_names
-        ]
-        return any([_validate_attr(attr) for attr in attrs_to_check])
-    return False
+        for attr, val in field_updates.items():
+            if attr not in table.attribute_keys:
+                _validate_attr(val)
 
 
 def validate_put_has_gsi_keys_set_to_none(item: Dict[str, Any], table: Table) -> None:
@@ -475,10 +474,7 @@ class DynamoHandler(BaseResponse):
 
         table = self.dynamodb_backend.get_table(name)
         validate_put_has_empty_keys(item, table)
-        if put_has_empty_attrs(item, table):
-            raise MockValidationException(
-                "One or more parameter values were invalid: An number set  may not be empty"
-            )
+        validate_put_has_empty_attrs(item, table)
         validate_put_has_gsi_keys_set_to_none(item, table)
 
         overwrite = "Expected" not in self.body
@@ -570,7 +566,7 @@ class DynamoHandler(BaseResponse):
     @include_consumed_capacity(0.5)
     def get_item(self) -> str:
         name = self.body["TableName"]
-        self.dynamodb_backend.get_table(name)
+        table = self.dynamodb_backend.get_table(name)
         key = self.body["Key"]
         empty_keys = [k for k, v in key.items() if not next(iter(v.values()))]
         if empty_keys:
@@ -593,6 +589,9 @@ class DynamoHandler(BaseResponse):
                 raise MockValidationException(
                     "ExpressionAttributeNames must not be empty"
                 )
+
+        if not all([k in table.attribute_keys for k in key]):
+            raise ProvidedKeyDoesNotExist
 
         expression_attribute_names = expression_attribute_names or {}
         projection_expressions = self._adjust_projection_expression(
@@ -862,13 +861,18 @@ class DynamoHandler(BaseResponse):
         if return_values not in ("ALL_OLD", "NONE"):
             raise MockValidationException("Return values set to invalid value")
 
-        self.dynamodb_backend.get_table(name)
+        table = self.dynamodb_backend.get_table(name)
+        if not all([k in table.attribute_keys for k in key]):
+            raise ProvidedKeyDoesNotExist
 
         # Attempt to parse simple ConditionExpressions into an Expected
         # expression
         condition_expression = self.body.get("ConditionExpression")
         expression_attribute_names = self.body.get("ExpressionAttributeNames", {})
         expression_attribute_values = self._get_expr_attr_values()
+        return_values_on_condition_check_failure = self.body.get(
+            "ReturnValuesOnConditionCheckFailure"
+        )
 
         item = self.dynamodb_backend.delete_item(
             name,
@@ -876,6 +880,7 @@ class DynamoHandler(BaseResponse):
             expression_attribute_names,
             expression_attribute_values,
             condition_expression,
+            return_values_on_condition_check_failure,
         )
 
         if item and return_values == "ALL_OLD":
@@ -895,6 +900,10 @@ class DynamoHandler(BaseResponse):
             raise MockValidationException(
                 "Can not use both expression and non-expression parameters in the same request: Non-expression parameters: {AttributeUpdates} Expression parameters: {UpdateExpression}"
             )
+
+        table = self.dynamodb_backend.get_table(name)
+        if not all([k in table.attribute_keys for k in key]):
+            raise ProvidedKeyDoesNotExist
 
         if update_expression is not None:
             update_expression = update_expression.strip()

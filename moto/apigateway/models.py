@@ -71,6 +71,7 @@ from .exceptions import (
 from .utils import create_id, to_path
 
 STAGE_URL = "https://{api_id}.execute-api.{region_name}.amazonaws.com/{stage_name}"
+PATCH_OPERATIONS = ["add", "remove", "replace", "move", "copy", "test"]
 
 
 class Deployment(CloudFormationModel):
@@ -1020,6 +1021,7 @@ class RestAPI(CloudFormationModel):
     PROP_POLICY = "policy"
     PROP_DISABLE_EXECUTE_API_ENDPOINT = "disableExecuteApiEndpoint"
     PROP_MINIMUM_COMPRESSION_SIZE = "minimumCompressionSize"
+    PROP_ROOT_RESOURCE_ID = "rootResourceId"
 
     # operations
     OPERATION_ADD = "add"
@@ -1064,6 +1066,7 @@ class RestAPI(CloudFormationModel):
         self.models: Dict[str, Model] = {}
         self.request_validators: Dict[str, RequestValidator] = {}
         self.default = self.add_child("/")  # Add default child
+        self.root_resource_id = self.default.id
 
     def __repr__(self) -> str:
         return str(self.id)
@@ -1082,6 +1085,7 @@ class RestAPI(CloudFormationModel):
             self.PROP_POLICY: self.policy,
             self.PROP_DISABLE_EXECUTE_API_ENDPOINT: self.disableExecuteApiEndpoint,
             self.PROP_MINIMUM_COMPRESSION_SIZE: self.minimum_compression_size,
+            self.PROP_ROOT_RESOURCE_ID: self.root_resource_id,
         }
 
     def apply_patch_operations(self, patch_operations: List[Dict[str, Any]]) -> None:
@@ -1529,6 +1533,54 @@ class GatewayResponse(BaseModel):
         return dct
 
 
+class Account(BaseModel):
+    def __init__(self) -> None:
+        self.cloudwatch_role_arn: Optional[str] = None
+        self.throttle_settings: Dict[str, Any] = {
+            "burstLimit": 5000,
+            "rateLimit": 10000.0,
+        }
+        self.features: Optional[List[str]] = None
+        self.api_key_version: str = "1"
+
+    def apply_patch_operations(
+        self, patch_operations: List[Dict[str, Any]]
+    ) -> "Account":
+        for op in patch_operations:
+            if "/cloudwatchRoleArn" in op["path"]:
+                self.cloudwatch_role_arn = op["value"]
+            elif "/features" in op["path"]:
+                if op["op"] == "add":
+                    if self.features is None:
+                        self.features = [op["value"]]
+                    else:
+                        self.features.append(op["value"])
+                elif op["op"] == "remove":
+                    if op["value"] == "UsagePlans":
+                        raise BadRequestException(
+                            "Usage Plans cannot be disabled once enabled"
+                        )
+                    if self.features is not None:
+                        self.features.remove(op["value"])
+                else:
+                    raise NotImplementedError(
+                        f'Patch operation "{op["op"]}" for "/features" not implemented'
+                    )
+            else:
+                raise NotImplementedError(
+                    f'Patch operation "{op["op"]}" for "{op["path"]}" not implemented'
+                )
+        return self
+
+    def to_json(self) -> Dict[str, Any]:
+        return {
+            "cloudwatchRoleArn": self.cloudwatch_role_arn,
+            "throttleSettings": self.throttle_settings,
+            "features": self.features,
+            "apiKeyVersion": self.api_key_version,
+        }
+
+
 class APIGatewayBackend(BaseBackend):
     """
     API Gateway mock.
@@ -1558,6 +1610,7 @@ class APIGatewayBackend(BaseBackend):
 
     def __init__(self, region_name: str, account_id: str):
         super().__init__(region_name, account_id)
+        self.account: Account = Account()
         self.apis: Dict[str, RestAPI] = {}
         self.keys: Dict[str, ApiKey] = {}
         self.usage_plans: Dict[str, UsagePlan] = {}
@@ -2097,8 +2150,12 @@ class APIGatewayBackend(BaseBackend):
         self.keys[key.id] = key
         return key
 
-    def get_api_keys(self) -> List[ApiKey]:
-        return list(self.keys.values())
+    def get_api_keys(self, name: Optional[str] = None) -> List[ApiKey]:
+        return [
+            key
+            for key in self.keys.values()
+            if not name or (key.name and key.name.startswith(name))
+        ]
 
     def get_api_key(self, api_key_id: str) -> ApiKey:
         if api_key_id not in self.keys:
@@ -2169,11 +2226,20 @@ class APIGatewayBackend(BaseBackend):
         self.usage_plan_keys[usage_plan_id][usage_plan_key.id] = usage_plan_key
         return usage_plan_key
 
-    def get_usage_plan_keys(self, usage_plan_id: str) -> List[UsagePlanKey]:
+    def get_usage_plan_keys(
+        self, usage_plan_id: str, name: Optional[str] = None
+    ) -> List[UsagePlanKey]:
         if usage_plan_id not in self.usage_plan_keys:
             return []
 
-        return list(self.usage_plan_keys[usage_plan_id].values())
+        plan_keys = self.usage_plan_keys[usage_plan_id].values()
+        if name:
+            return [
+                key
+                for key in plan_keys
+                if not name or (key.name and key.name.startswith(name))
+            ]
+        return list(plan_keys)
 
     def get_usage_plan_key(self, usage_plan_id: str, key_id: str) -> UsagePlanKey:
         # first check if is a valid api key
@@ -2484,6 +2550,13 @@ class APIGatewayBackend(BaseBackend):
     def delete_gateway_response(self, rest_api_id: str, response_type: str) -> None:
         api = self.get_rest_api(rest_api_id)
         api.delete_gateway_response(response_type)
+
+    def update_account(self, patch_operations: List[Dict[str, Any]]) -> Account:
+        account = self.account.apply_patch_operations(patch_operations)
+        return account
+
+    def get_account(self) -> Account:
+        return self.account
 
 
 apigateway_backends = BackendDict(APIGatewayBackend, "apigateway")

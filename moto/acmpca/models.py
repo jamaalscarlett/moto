@@ -2,7 +2,7 @@
 
 import base64
 import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
@@ -19,6 +19,7 @@ from moto.utilities.utils import get_partition
 from .exceptions import (
     InvalidS3ObjectAclInCrlConfiguration,
     InvalidStateException,
+    MalformedCertificateAuthorityException,
     ResourceNotFoundException,
 )
 
@@ -49,47 +50,20 @@ class CertificateAuthority(BaseModel):
         self.usage_mode = "SHORT_LIVED_CERTIFICATE"
         self.security_standard = security_standard or "FIPS_140_2_LEVEL_3_OR_HIGHER"
 
-        self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.password = str(mock_random.uuid4()).encode("utf-8")
-        self.private_bytes = self.key.private_bytes(
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        self.private_bytes = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.BestAvailableEncryption(self.password),
         )
-        self.certificate: Optional[x509.Certificate] = None
+
+        self.certificate_bytes: bytes = b""
         self.certificate_chain: Optional[bytes] = None
         self.issued_certificates: Dict[str, bytes] = dict()
 
-        subject = self.certificate_authority_configuration.get("Subject", {})
-        name_attributes = []
-        if "Country" in subject:
-            name_attributes.append(
-                x509.NameAttribute(x509.NameOID.COUNTRY_NAME, subject["Country"])
-            )
-        if "State" in subject:
-            name_attributes.append(
-                x509.NameAttribute(
-                    x509.NameOID.STATE_OR_PROVINCE_NAME, subject["State"]
-                )
-            )
-        if "Organization" in subject:
-            name_attributes.append(
-                x509.NameAttribute(
-                    x509.NameOID.ORGANIZATION_NAME, subject["Organization"]
-                )
-            )
-        if "OrganizationalUnit" in subject:
-            name_attributes.append(
-                x509.NameAttribute(
-                    x509.NameOID.ORGANIZATIONAL_UNIT_NAME, subject["OrganizationalUnit"]
-                )
-            )
-        if "CommonName" in subject:
-            name_attributes.append(
-                x509.NameAttribute(x509.NameOID.COMMON_NAME, subject["CommonName"])
-            )
-        self.issuer = x509.Name(name_attributes)
-        self.csr = self._ca_csr(self.issuer)
+        self.subject = self.certificate_authority_configuration.get("Subject", {})
 
     def generate_cert(
         self,
@@ -114,10 +88,57 @@ class CertificateAuthority(BaseModel):
 
         return cert.public_bytes(serialization.Encoding.PEM)
 
-    def _ca_csr(self, issuer: x509.Name) -> bytes:
+    @property
+    def key(self) -> rsa.RSAPrivateKey:
+        private_key = serialization.load_pem_private_key(
+            self.private_bytes,
+            password=self.password,
+        )
+        return cast(rsa.RSAPrivateKey, private_key)
+
+    @property
+    def certificate(self) -> Optional[x509.Certificate]:
+        if self.certificate_bytes:
+            return x509.load_pem_x509_certificate(self.certificate_bytes)
+        return None
+
+    @property
+    def issuer(self) -> x509.Name:
+        name_attributes = []
+        if "Country" in self.subject:
+            name_attributes.append(
+                x509.NameAttribute(x509.NameOID.COUNTRY_NAME, self.subject["Country"])
+            )
+        if "State" in self.subject:
+            name_attributes.append(
+                x509.NameAttribute(
+                    x509.NameOID.STATE_OR_PROVINCE_NAME, self.subject["State"]
+                )
+            )
+        if "Organization" in self.subject:
+            name_attributes.append(
+                x509.NameAttribute(
+                    x509.NameOID.ORGANIZATION_NAME, self.subject["Organization"]
+                )
+            )
+        if "OrganizationalUnit" in self.subject:
+            name_attributes.append(
+                x509.NameAttribute(
+                    x509.NameOID.ORGANIZATIONAL_UNIT_NAME,
+                    self.subject["OrganizationalUnit"],
+                )
+            )
+        if "CommonName" in self.subject:
+            name_attributes.append(
+                x509.NameAttribute(x509.NameOID.COMMON_NAME, self.subject["CommonName"])
+            )
+        return x509.Name(name_attributes)
+
+    @property
+    def csr(self) -> bytes:
         csr = (
             x509.CertificateSigningRequestBuilder()
-            .subject_name(issuer)
+            .subject_name(self.issuer)
             .add_extension(
                 x509.BasicConstraints(ca=True, path_length=None),
                 critical=True,
@@ -257,12 +278,6 @@ class CertificateAuthority(BaseModel):
                         raise InvalidS3ObjectAclInCrlConfiguration(acl)
 
     @property
-    def certificate_bytes(self) -> bytes:
-        if self.certificate:
-            return self.certificate.public_bytes(serialization.Encoding.PEM)
-        return b""
-
-    @property
     def not_valid_after(self) -> Optional[float]:
         if self.certificate is None:
             return None
@@ -283,7 +298,12 @@ class CertificateAuthority(BaseModel):
     def import_certificate_authority_certificate(
         self, certificate: bytes, certificate_chain: Optional[bytes]
     ) -> None:
-        self.certificate = x509.load_pem_x509_certificate(certificate)
+        try:
+            x509.load_pem_x509_certificate(certificate)
+        except ValueError:
+            raise MalformedCertificateAuthorityException()
+
+        self.certificate_bytes = certificate
         self.certificate_chain = certificate_chain
         self.status = "ACTIVE"
         self.updated_at = unix_time()

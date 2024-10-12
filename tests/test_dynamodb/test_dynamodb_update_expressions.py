@@ -94,6 +94,22 @@ def test_update_item_add_float(table_name=None):
 
 @pytest.mark.aws_verified
 @dynamodb_aws_verified()
+def test_delete_last_item_from_map(table_name=None):
+    table = boto3.resource("dynamodb", "us-east-1").Table(table_name)
+
+    table.put_item(Item={"pk": "foo", "map": {"sset": {"foo"}}})
+    resp = table.update_item(
+        Key={"pk": "foo"},
+        UpdateExpression="DELETE #map.#sset :s",
+        ExpressionAttributeNames={"#map": "map", "#sset": "sset"},
+        ExpressionAttributeValues={":s": {"foo"}},
+        ReturnValues="ALL_NEW",
+    )
+    assert {"pk": "foo", "map": {}} == resp["Attributes"]
+
+
+@pytest.mark.aws_verified
+@dynamodb_aws_verified()
 def test_delete_non_existing_item(table_name=None):
     table = boto3.resource("dynamodb", "us-east-1").Table(table_name)
 
@@ -225,3 +241,65 @@ def test_update_item_with_empty_expression(table_name=None):
     assert (
         err["Message"] == "Invalid UpdateExpression: The expression can not be empty;"
     )
+
+
+@pytest.mark.aws_verified
+@dynamodb_aws_verified()
+def test_update_expression_with_multiple_remove_clauses(table_name=None):
+    ddb_client = boto3.client("dynamodb", "us-east-1")
+    payload = {
+        "pk": {"S": "primary_key"},
+        "current_user": {"M": {"name": {"S": "John"}, "surname": {"S": "Doe"}}},
+        "user_list": {
+            "L": [
+                {"M": {"name": {"S": "John"}, "surname": {"S": "Doe"}}},
+                {"M": {"name": {"S": "Jane"}, "surname": {"S": "Smith"}}},
+            ]
+        },
+        "some_param": {"NULL": True},
+    }
+    ddb_client.put_item(TableName=table_name, Item=payload)
+    with pytest.raises(ClientError) as exc:
+        ddb_client.update_item(
+            TableName=table_name,
+            Key={"pk": {"S": "primary_key"}},
+            UpdateExpression="REMOVE #ulist[0] SET current_user = :current_user REMOVE some_param",
+            ExpressionAttributeNames={"#ulist": "user_list"},
+            ExpressionAttributeValues={":current_user": {"M": {"name": {"S": "Jane"}}}},
+        )
+    err = exc.value.response["Error"]
+    assert err["Code"] == "ValidationException"
+    assert (
+        err["Message"]
+        == 'Invalid UpdateExpression: The "REMOVE" section can only be used once in an update expression;'
+    )
+
+
+@pytest.mark.aws_verified
+@dynamodb_aws_verified()
+def test_update_expression_remove_list_and_attribute(table_name=None):
+    ddb_client = boto3.client("dynamodb", "us-east-1")
+    payload = {
+        "pk": {"S": "primary_key"},
+        "user_list": {
+            "L": [
+                {"M": {"name": {"S": "John"}, "surname": {"S": "Doe"}}},
+                {"M": {"name": {"S": "Jane"}, "surname": {"S": "Smith"}}},
+            ]
+        },
+        "some_param": {"NULL": True},
+    }
+    ddb_client.put_item(TableName=table_name, Item=payload)
+    ddb_client.update_item(
+        TableName=table_name,
+        Key={"pk": {"S": "primary_key"}},
+        UpdateExpression="REMOVE #ulist[0], some_param",
+        ExpressionAttributeNames={"#ulist": "user_list"},
+    )
+    item = ddb_client.get_item(TableName=table_name, Key={"pk": {"S": "primary_key"}})[
+        "Item"
+    ]
+    assert item == {
+        "user_list": {"L": [{"M": {"name": {"S": "Jane"}, "surname": {"S": "Smith"}}}]},
+        "pk": {"S": "primary_key"},
+    }

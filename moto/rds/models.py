@@ -939,9 +939,9 @@ class DBInstance(CloudFormationModel, RDSBaseModel):
                 <VpcId>{{ database.db_subnet_group.vpc_id }}</VpcId>
               </DBSubnetGroup>
               {% endif %}
-              <PubliclyAccessible>{{ database.publicly_accessible }}</PubliclyAccessible>
-              <CopyTagsToSnapshot>{{ database.copy_tags_to_snapshot }}</CopyTagsToSnapshot>
-              <AutoMinorVersionUpgrade>{{ database.auto_minor_version_upgrade }}</AutoMinorVersionUpgrade>
+              <PubliclyAccessible>{{ 'true' if database.publicly_accessible else 'false' }}</PubliclyAccessible>
+              <CopyTagsToSnapshot>{{ 'true' if database.copy_tags_to_snapshot else 'false' }}</CopyTagsToSnapshot>
+              <AutoMinorVersionUpgrade>{{ 'true' if database.auto_minor_version_upgrade else 'false' }}</AutoMinorVersionUpgrade>
               <AllocatedStorage>{{ database.allocated_storage }}</AllocatedStorage>
               <StorageEncrypted>{{ 'true' if database.storage_encrypted else 'false' }}</StorageEncrypted>
               {% if database.kms_key_id %}
@@ -998,6 +998,13 @@ class DBInstance(CloudFormationModel, RDSBaseModel):
         for key, value in db_kwargs.items():
             if value is not None:
                 setattr(self, key, value)
+
+        cwl_exports = db_kwargs.get("cloudwatch_logs_exports_config") or {}
+        for exp in cwl_exports.get("DisableLogTypes", []):
+            self.enabled_cloudwatch_logs_exports.remove(exp)
+        self.enabled_cloudwatch_logs_exports.extend(
+            cwl_exports.get("EnableLogTypes", [])
+        )
 
     @classmethod
     def has_cfn_attr(cls, attr: str) -> bool:
@@ -2897,26 +2904,36 @@ class OptionGroup(RDSBaseModel):
           <EngineName>{{ option_group.engine_name }}</EngineName>
           <OptionGroupDescription>{{ option_group.description }}</OptionGroupDescription>
           <OptionGroupArn>{{ option_group.arn }}</OptionGroupArn>
-          <Options/>
+          <Options>
+              {% for name, option_settings in option_group.options.items() %}
+              <Option>
+                <OptionName>{{ name }}</OptionName>
+                <OptionSettings>
+                  {% for setting in option_settings %}
+                  <OptionSetting>
+                    <Name>{{ setting.get("Name") }}</Name>
+                    <Value>{{ setting.get("Value") }}</Value>
+                  </OptionSetting>
+                  {% endfor %}
+                </OptionSettings>
+              </Option>
+              {% endfor %}
+          </Options>
         </OptionGroup>"""
         )
         return template.render(option_group=self)
 
-    def remove_options(
-        self,
-        options_to_remove: Any,  # pylint: disable=unused-argument
-    ) -> None:
-        # TODO: Check for option in self.options and remove if exists. Raise
-        # error otherwise
-        return
+    def remove_options(self, options_to_remove: Any) -> None:
+        for option in options_to_remove:
+            if isinstance(option, str):
+                self.options.pop(option, None)
 
-    def add_options(
-        self,
-        options_to_add: Any,  # pylint: disable=unused-argument
-    ) -> None:
-        # TODO: Validate option and add it to self.options. If invalid raise
-        # error
-        return
+    def add_options(self, options_to_add: Any) -> None:
+        for option in options_to_add:
+            if isinstance(option, str):
+                self.options[option] = {}
+            elif isinstance(option, dict):
+                self.options[option["OptionName"]] = option["OptionSettings"]
 
 
 class DBParameterGroup(CloudFormationModel, RDSBaseModel):

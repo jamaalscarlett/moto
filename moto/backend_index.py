@@ -8,13 +8,16 @@ backend_url_patterns = [
     ("apigateway", re.compile("https?://apigateway\\.(.+)\\.amazonaws.com")),
     (
         "apigatewaymanagementapi",
-        re.compile("https?://execute-api\\.(.+)\\.amazonaws\\.com"),
+        re.compile(
+            "https?://([^.]+\\.)*execute-api\\.[a-z]{2}-[-a-z]+-\\d+\\.amazonaws\\.com"
+        ),
     ),
     ("appconfig", re.compile("https?://appconfig\\.(.+)\\.amazonaws\\.com")),
     (
         "applicationautoscaling",
         re.compile("https?://application-autoscaling\\.(.+)\\.amazonaws.com"),
     ),
+    ("appmesh", re.compile("https?://appmesh\\.(.+)\\.amazonaws\\.com")),
     ("appsync", re.compile("https?://appsync\\.(.+)\\.amazonaws\\.com")),
     ("athena", re.compile("https?://athena\\.(.+)\\.amazonaws\\.com")),
     ("autoscaling", re.compile("https?://autoscaling\\.(.+)\\.amazonaws\\.com")),
@@ -115,6 +118,7 @@ backend_url_patterns = [
     ("mediapackage", re.compile("https?://mediapackage\\.(.+)\\.amazonaws.com")),
     ("mediastore", re.compile("https?://mediastore\\.(.+)\\.amazonaws\\.com")),
     ("mediastoredata", re.compile("https?://data\\.mediastore\\.(.+)\\.amazonaws.com")),
+    ("memorydb", re.compile("https?://memory-db\\.(.+)\\.amazonaws\\.com")),
     (
         "meteringmarketplace",
         re.compile("https?://metering.marketplace.(.+).amazonaws.com"),
@@ -126,6 +130,7 @@ backend_url_patterns = [
     ("opensearchserverless", re.compile("https?://aoss\\.(.+)\\.amazonaws\\.com")),
     ("opsworks", re.compile("https?://opsworks\\.us-east-1\\.amazonaws.com")),
     ("organizations", re.compile("https?://organizations\\.(.+)\\.amazonaws\\.com")),
+    ("osis", re.compile("https?://osis\\.(.+)\\.amazonaws\\.com")),
     ("panorama", re.compile("https?://panorama\\.(.+)\\.amazonaws.com")),
     ("personalize", re.compile("https?://personalize\\.(.+)\\.amazonaws\\.com")),
     ("pinpoint", re.compile("https?://pinpoint\\.(.+)\\.amazonaws\\.com")),
@@ -196,6 +201,10 @@ backend_url_patterns = [
     ("swf", re.compile("https?://swf\\.(.+)\\.amazonaws\\.com")),
     ("textract", re.compile("https?://textract\\.(.+)\\.amazonaws\\.com")),
     (
+        "timestreamquery",
+        re.compile("https?://query.timestream\\.(.+)\\.amazonaws\\.com"),
+    ),
+    (
         "timestreamwrite",
         re.compile("https?://ingest\\.timestream\\.(.+)\\.amazonaws\\.com"),
     ),
@@ -207,5 +216,6 @@ backend_url_patterns = [
     ("transfer", re.compile("https?://transfer\\.(.+)\\.amazonaws\\.com")),
     ("wafv2", re.compile("https?://wafv2\\.(.+)\\.amazonaws.com")),
     ("workspaces", re.compile("https?://workspaces\\.(.+)\\.amazonaws\\.com")),
+    ("workspacesweb", re.compile("https?://workspaces-web\\.(.+)\\.amazonaws\\.com")),
     ("xray", re.compile("https?://xray\\.(.+)\\.amazonaws.com")),
 ]

@@ -1,9 +1,9 @@
 import json
-import os
 import re
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
-from moto.core.responses import BaseResponse
+from moto.core.responses import TYPE_RESPONSE, BaseResponse
+from moto.utilities.utils import load_resource
 
 from .exceptions import InvalidParameterException
 from .models import (
@@ -623,12 +623,14 @@ class CognitoIdpResponse(BaseResponse):
 
     def associate_software_token(self) -> str:
         access_token = self._get_param("AccessToken")
-        result = self.backend.associate_software_token(access_token)
+        session = self._get_param("Session")
+        result = self.backend.associate_software_token(access_token, session)
         return json.dumps(result)
 
     def verify_software_token(self) -> str:
         access_token = self._get_param("AccessToken")
-        result = self.backend.verify_software_token(access_token)
+        session = self._get_param("Session")
+        result = self.backend.verify_software_token(access_token, session)
         return json.dumps(result)
 
     def set_user_mfa_preference(self) -> str:
@@ -674,16 +676,17 @@ class CognitoIdpResponse(BaseResponse):
 
 
 class CognitoIdpJsonWebKeyResponse(BaseResponse):
-    def __init__(self) -> None:
-        with open(
-            os.path.join(os.path.dirname(__file__), "resources/jwks-public.json")
-        ) as f:
-            self.json_web_key = f.read()
+    json_web_key = json.dumps(
+        load_resource(__name__, "resources/jwks-public.json")
+    ).encode("utf-8")
 
-    def serve_json_web_key(
-        self,
-        request: Any,  # pylint: disable=unused-argument
-        full_url: str,  # pylint: disable=unused-argument
-        headers: Any,  # pylint: disable=unused-argument
-    ) -> Tuple[int, Dict[str, str], str]:
-        return 200, {"Content-Type": "application/json"}, self.json_web_key
+    def __init__(self) -> None:
+        super().__init__(service_name="cognito-idp")
+
+    @staticmethod
+    def serve_json_web_key(*args) -> TYPE_RESPONSE:  # type: ignore
+        return (
+            200,
+            {"Content-Type": "application/json"},
+            CognitoIdpJsonWebKeyResponse.json_web_key,
+        )

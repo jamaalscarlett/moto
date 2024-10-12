@@ -45,6 +45,7 @@ from moto.s3.exceptions import (
     EntityTooSmall,
     HeadOnDeleteMarker,
     InvalidBucketName,
+    InvalidBucketState,
     InvalidNotificationDestination,
     InvalidNotificationEvent,
     InvalidObjectState,
@@ -142,7 +143,7 @@ class FakeKey(BaseModel, ManagedState):
         self.last_modified = utcnow()
         self.acl: Optional[FakeAcl] = get_canned_acl("private")
         self.website_redirect_location: Optional[str] = None
-        self.checksum_algorithm = None
+        self.checksum_algorithm: Optional[str] = None
         self._storage_class: Optional[str] = storage if storage else "STANDARD"
         self._metadata = LowercaseDict()
         self._expiry: Optional[datetime.datetime] = None
@@ -371,12 +372,14 @@ class FakeKey(BaseModel, ManagedState):
         self.value = state["value"]  # type: ignore
         self.lock = threading.Lock()
 
-    @property
-    def is_locked(self) -> bool:
+    def is_locked(self, governance_bypass: bool) -> bool:
         if self.lock_legal_status == "ON":
             return True
 
-        if self.lock_mode == "COMPLIANCE":
+        if self.lock_mode == "GOVERNANCE" and governance_bypass:
+            return False
+
+        if self.lock_mode in ["GOVERNANCE", "COMPLIANCE"]:
             now = utcnow()
             try:
                 until = datetime.datetime.strptime(
@@ -1047,7 +1050,7 @@ class FakeBucket(CloudFormationModel):
         self.versioning_status: Optional[str] = None
         self.rules: List[LifecycleRule] = []
         self.policy: Optional[bytes] = None
-        self.website_configuration: Optional[Dict[str, Any]] = None
+        self.website_configuration: Optional[bytes] = None
         self.acl: Optional[FakeAcl] = get_canned_acl("private")
         self.cors: List[CorsRule] = []
         self.logging: Dict[str, Any] = {}
@@ -1686,6 +1689,20 @@ class S3Backend(BaseBackend, CloudWatchMetricProvider):
 
     If this dependency is not installed, Moto will fall-back to the CRC32-computation when computing checksums.
 
+    _-_-_-_
+
+    S3 has two endpoint styles, where the bucket name can be either part of the domain (bucket.s3.amazonaws.com) or part of the path (s3.amazonaws.com/bucket).
+
+    If you're running MotoServer on a custom host, for instance on `http://moto.service:5000`, a CreateBucket-request then becomes `http://moto.service:5000/bucketname`.
+
+    However, because Moto tries to get the bucket-name from the domain first, it will think that 'moto' is the bucket name.
+
+    You can disable this behaviour with an environment variable, so that Moto will always look at the path instead:
+
+    .. sourcecode:: bash
+
+        S3_IGNORE_SUBDOMAIN_BUCKETNAME=true
+
     """
 
     def __init__(self, region_name: str, account_id: str):
@@ -1882,6 +1899,10 @@ class S3Backend(BaseBackend, CloudWatchMetricProvider):
         else:
             s3_backends.bucket_accounts.pop(bucket_name, None)
             return self.buckets.pop(bucket_name)
+
+    def get_bucket_accelerate_configuration(self, bucket_name: str) -> Optional[str]:
+        bucket = self.get_bucket(bucket_name)
+        return bucket.accelerate_configuration
 
     def put_bucket_versioning(self, bucket_name: str, status: str) -> None:
         self.get_bucket(bucket_name).versioning_status = status
@@ -2086,15 +2107,13 @@ class S3Backend(BaseBackend, CloudWatchMetricProvider):
         bucket = self.get_bucket(bucket_name)
         bucket.delete_lifecycle()
 
-    def set_bucket_website_configuration(
-        self, bucket_name: str, website_configuration: Dict[str, Any]
+    def put_bucket_website(
+        self, bucket_name: str, website_configuration: bytes
     ) -> None:
         bucket = self.get_bucket(bucket_name)
         bucket.website_configuration = website_configuration
 
-    def get_bucket_website_configuration(
-        self, bucket_name: str
-    ) -> Optional[Dict[str, Any]]:
+    def get_bucket_website_configuration(self, bucket_name: str) -> Optional[bytes]:
         bucket = self.get_bucket(bucket_name)
         return bucket.website_configuration
 
@@ -2377,6 +2396,10 @@ class S3Backend(BaseBackend, CloudWatchMetricProvider):
         years: Optional[int] = None,
     ) -> None:
         bucket = self.get_bucket(bucket_name)
+        if not bucket.is_versioned:
+            raise InvalidBucketState(
+                "Versioning must be 'Enabled' on the bucket to apply a Object Lock configuration"
+            )
 
         if bucket.keys.item_size() > 0:
             raise BucketNeedsToBeNew
@@ -2558,7 +2581,10 @@ class S3Backend(BaseBackend, CloudWatchMetricProvider):
         )
         return key
 
-    def get_all_multiparts(self, bucket_name: str) -> Dict[str, FakeMultipart]:
+    def list_multipart_uploads(self, bucket_name: str) -> Dict[str, FakeMultipart]:
+        """
+        The delimiter and max-uploads parameters have not yet been implemented.
+        """
         bucket = self.get_bucket(bucket_name)
         return bucket.multiparts
 
@@ -2741,7 +2767,7 @@ class S3Backend(BaseBackend, CloudWatchMetricProvider):
         key_name: str,
         version_id: Optional[str] = None,
         bypass: bool = False,
-    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    ) -> Tuple[bool, Dict[str, Any]]:
         bucket = self.get_bucket(bucket_name)
 
         response_meta = {}
@@ -2769,10 +2795,8 @@ class S3Backend(BaseBackend, CloudWatchMetricProvider):
 
                     for key in bucket.keys.getlist(key_name):
                         if str(key.version_id) == str(version_id):
-                            if (
-                                hasattr(key, "is_locked")
-                                and key.is_locked
-                                and not bypass
+                            if isinstance(key, FakeKey) and key.is_locked(
+                                governance_bypass=bypass
                             ):
                                 raise AccessDeniedByLock
 
@@ -2807,19 +2831,39 @@ class S3Backend(BaseBackend, CloudWatchMetricProvider):
 
             return True, response_meta
         except KeyError:
-            return False, None
+            return False, response_meta
 
     def delete_objects(
-        self, bucket_name: str, objects: List[Dict[str, Any]]
-    ) -> List[Tuple[str, Optional[str]]]:
-        deleted_objects = []
+        self,
+        bucket_name: str,
+        objects: List[Dict[str, Any]],
+        bypass_retention: bool = False,
+    ) -> Tuple[List[Tuple[str, Optional[str], Optional[str]]], List[str]]:
+        deleted = []
+        errors = []
         for object_ in objects:
             key_name = object_["Key"]
             version_id = object_.get("VersionId", None)
 
-            self.delete_object(bucket_name, key_name, version_id=version_id)
-            deleted_objects.append((key_name, version_id))
-        return deleted_objects
+            try:
+                success, headers = self.delete_object(
+                    bucket_name,
+                    key_name,
+                    version_id=version_id,
+                    bypass=bypass_retention,
+                )
+                deleted.append(
+                    (
+                        key_name,
+                        version_id,
+                        headers.get("version-id")
+                        if headers and not version_id
+                        else None,
+                    )
+                )
+            except AccessDeniedByLock:
+                errors.append(key_name)
+        return deleted, errors
 
     def copy_object(
         self,

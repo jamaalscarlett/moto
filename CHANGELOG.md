@@ -1,6 +1,271 @@
 Moto Changelog
 ==============
 
+5.0.16
+-----
+Docker Digest for 5.0.16: _sha256:9506ad3448a87082a436533855c61afaf3f1869e73f39f6575917db975569908_
+
+    New Services:
+        * OpenSearch Ingestion Service:
+            * create_pipeline()
+            * delete_pipeline()
+            * get_pipeline()
+            * list_pipelines()
+            * list_tags_for_resource()
+            * start_pipeline()
+            * stop_pipeline()
+            * tag_resource()
+            * untag_resource()
+            * update_pipeline()
+
+    New Methods:
+        * CloudFront:
+            * get_invalidation()
+
+        * Directory Service:
+            * create_trust()
+            * delete_trust()
+            * describe_ldaps_settings()
+            * describe_trusts()
+            * disable_ldaps()
+            * enable_ldaps()
+
+        * EC2: 
+            * modify_ebs_default_kms_key_id()
+
+    Miscellaneous:
+        * CloudFormation: AWS::ECS::TaskDefinition now correctly validates the provided memory parameters
+        * EC2: create_network_acl_entry() now supports the Ipv6CidrBlock-parameter 
+        * EC2: create_tags() now takes existing tags into account before throwing a TagLimitExceeded-exception
+        * Firehose: put_record_batch() no longer fails when the SnowflakeDestinationConfiguration-parameter is set
+        * FSx: The FileSystemID now uses the same pattern as AWS (fs-xxxxxxxx)
+        * GuardDuty: create_detector() now supports the Features-parameter
+        * Polly has been updated with the latest voices
+        * RDS: modify_option_groups() now correctly parses OptionsToInclude
+        * ResourceGroupsTaggingAPI: get_resources() now supports EC2 NAT Gateways, route tables, subnets
+        * Scheduler: create_chedule() now validates the start_date-parameter for recurrent schedule expressions
+        * SNS: publish() and publish_batch now support MessageStructure=json
+        * WAFv2: associate_web_acl() now allows any resource to be associated
+
+
+5.0.15
+-----
+Docker Digest for 5.0.15: _sha256:9d78f63668017ca6eb9bdb415418d8077e1e503a1e81edb4657f93cf7ff34be1_
+
+    New Services:
+        * MemoryDB:
+            * create_cluster()
+            * create_snapshot()
+            * create_subnet_group()
+            * delete_cluster()
+            * delete_snapshot()
+            * delete_subnet_group()
+            * describe_clusters()
+            * describe_snapshots()
+            * describe_subnet_groups()
+            * list_tags()
+            * tag_resource()
+            * untag_resource()
+            * update_cluster()
+
+        * WorkspacesWeb:
+            * associate_browser_settings()
+            * associate_network_settings()
+            * associate_user_access_logging_settings()
+            * associate_user_settings()
+            * create_browser_settings()
+            * create_network_settings()
+            * create_portal()
+            * create_user_access_logging_settings()
+            * create_user_settings()
+            * delete_browser_settings()
+            * delete_network_settings()
+            * delete_portal()
+            * delete_user_access_logging_settings()
+            * delete_user_settings()
+            * get_browser_settings()
+            * get_network_settings()
+            * get_portal()
+            * get_user_access_logging_settings()
+            * get_user_settings()
+            * list_browser_settings()
+            * list_network_settings()
+            * list_portals()
+            * list_user_access_logging_settings()
+            * list_user_settings()
+
+    New Methods:
+        * ApiGateway:
+            * get_account()
+            * update_account()
+
+        * AppSync:
+            * create_api_cache()
+            * delete_api_cache()
+            * get_api_cache()
+
+    Miscellaneous:
+        * DynamoDB: get/delete/update_item() now validates all provided keys exist
+        * Firehose: create_delivery_stream() now supports the SnowflakeDestinationConfiguration-parameter
+        * S3: put_object() now support conditional writes
+
+
+5.0.14
+-----
+Docker Digest for 5.0.14: _sha256:5399ffa0daadd1eb6c00250ec64453675f9635d0a210563f43c26b43e0dfd178_
+
+    General:
+        * All JSON files in the binary distribution are shipped compressed, significantly reducing the size on disk
+
+    New Services:
+        * Shield:
+            * create_subscription()
+            * describe_subscription()
+
+        * TimestreamQuery:
+            * create_scheduled_query()
+            * delete_scheduled_query()
+            * describe_endpoints()
+            * describe_scheduled_query()
+            * query()
+            * update_scheduled_query()
+
+    New Methods:
+        * AppMesh:
+            * create_virtual_node()
+            * delete_virtual_node()
+            * describe_virtual_node()
+            * list_virtual_nodes()
+            * update_virtual_node()
+            * create_virtual_router()
+            * delete_virtual_router()
+            * describe_virtual_router()
+            * list_virtual_routers()
+            * update_virtual_router()
+            * create_route()
+            * delete_route()
+            * describe_route()
+            * list_routes()
+            * update_route()
+
+    Miscellaneous:
+        * CloudFormation templates now support the Fn::Base64-function
+        * CognitoIDP: Enhanced support for MFA flows/challenges
+        * DynamoDB: update_item() now validates empty string sets
+        * EC2: describe_snapshots() now supports the kms-key-id filter
+        * EC2: run_instances() now supports the parameter Ipv6AddressCount
+        * ECS: Tasks can now be created with unknown security groups
+        * IAM: generate_credentials_report() now shows active certificates
+        * KMS: sign() now supports Alias ARNs
+        * Route53: list_resource_record_sets() now validates record names
+        * S3: create_bucket() now has additional LocationConstraint-validation
+        * S3: delete_objects() now respects BucketPolicy and ObjectLocks
+        * S3: head_object() now handles Range-parameter correctly
+        * SageMaker: search() now supports the CONTAINS filter
+        * Sagemaker Runtime: invoke_endpoint_async() now supports failure responses
+        * SNS: Signature of HTTP Messages are now valid
+        * SSM: get_maintenance_window() now returns an exception if the window does not exist
+        * SQS: delete_message_batch() now validates there's at least one entry
+
+
+5.0.13
+-----
+Docker Digest for 5.0.13: _sha256:de97faba597d8f1bfb4dab1c7d562e1997ac5e0ba1186c4392430650b0f6bd4e_
+
+    General:
+        * Support for Python 3.13
+        * Moto now supports whitelisting which services can be used
+
+    New Services:
+        * AppMesh:
+            * create_mesh()
+            * delete_mesh()
+            * describe_mesh()
+            * list_meshes()
+            * list_tags_for_resource()
+            * tag_resource()
+            * update_mesh()
+
+        * Transfer:
+            * create_server()
+            * create_user()
+            * delete_server()
+            * delete_ssh_public_key()
+            * delete_user()
+            * describe_server()
+            * describe_user()
+            * import_ssh_public_key()
+
+    New Methods:
+        * Athena:
+            * delete_work_group()
+
+        * CodeBuild:
+            * batch_get_projects()
+
+        * DynamoDB:
+            * delete_resource_policy()
+            * get_resource_policy()
+            * put_resource_policy()
+
+        * EMR:
+            * get_block_public_access_configuration()
+            * put_block_public_access_configuration()
+
+        * QLDB:
+            * create_ledger()
+            * delete_ledger()
+            * describe_ledger()
+            * list_tags_for_resource()
+            * tag_resource()
+            * update_ledger()
+
+        * SageMaker:
+            * create_data_quality_job_definition()
+            * create_model_bias_job_definition()
+            * create_model_card()
+            * delete_data_quality_job_definition()
+            * delete_model_bias_job_definition()
+            * delete_model_card()
+            * describe_data_quality_job_definition()
+            * describe_model_bias_job_definition()
+            * describe_model_card()
+            * list_data_quality_job_definitions()
+            * list_model_bias_job_definitions()
+            * list_model_cards()
+            * list_model_card_versions()
+
+    Miscellaneous:
+        * ACM-PCA: create_certificate_authority() now uses the provided Subject
+        * Athena: The default work group now has the correct configuration
+        * ApplicationAutoscaling - put_scheduled_action() now allows multiple actions per Namespace/Dimension/Id
+        * Autoscaling: update_group() now validates that the Group exists
+        * Batch: now supports parameters in Job commands
+        * CloudFormation: create_change_set() now validates the provided ChangeSetName
+        * CloudFormation: describe_stacks() now returns export names in the Outputs
+        * CloudFormation: AWS::Events::Rule's now also creates/deletes Targets 
+        * CloudWatch: get_metric_data() now returns everything when querying for Metric Insights Queries
+        * CodeBuild: create_project() now supports the parameter description, tags, cache, timeoutInMinutes, queuedTimeoutInMinutes, sourceVersion, logsConfig and vpcConfig
+        * CognitoIDP: sign_up() now returns CodeDeliveryDetails
+        * DynamoDB: export_table_to_point_in_time() now exports data in correct format
+        * DynamoDB: update_item() now validates an empty ExpressionAttributeValues and UpdateExpression
+        * DynamoDB: All applicable methods that accept a TableName-parameter now also accept the ARN of the table
+        * EC2: describe_security_group_rules() now correctly exposes rules with duplicate port/protocol values
+        * EC2: Terminating an instance now also terminates any NIC's
+        * EventBridge: create_connection() now creates a KMS Secret
+        * EventBridge: Messages are now formatted using the InputTemplate, if provided
+        * KMS: describe_key() now exposes the MultiRegionConfiguration-attribute
+        * Organizations: create_account() now comes preconfigured with an IAM role
+        * RDS: update_db_instance() now supports the CloudwatchLogsExportConfiguration-parameter
+        * ResourceGroupsTagging API now supports additional SageMaker resources
+          (CompilationJobs, Domains, ModelExplainabilityJobDefinition, ModelQualityJobDefinition, HyperParameterTuningJob)
+        * S3: copy_object() now respects the CopySourceIfNoneMatch-parameter
+        * SageMaker: search() now supports ModelPackageGroups
+        * StepFunctions now has improved JSONPath support
+        * StepFunctions now supports MaxItem/MaxItemPath/MaxConcurrencyPath
+        * StepFunctions now supports MaxAttempts with value 0
+
+
 5.0.12
 -----
 Docker Digest for 5.0.12: _sha256:e1bde8f908f2fdf0878c8e4398561badd016b51b4d9fd8dcb9f4daef936a4427_

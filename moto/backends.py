@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from moto.apigatewayv2.models import ApiGatewayV2Backend
     from moto.appconfig.models import AppConfigBackend
     from moto.applicationautoscaling.models import ApplicationAutoscalingBackend
+    from moto.appmesh.models import AppMeshBackend
     from moto.appsync.models import AppSyncBackend
     from moto.athena.models import AthenaBackend
     from moto.autoscaling.models import AutoScalingBackend
@@ -91,6 +92,7 @@ if TYPE_CHECKING:
     from moto.mediapackage.models import MediaPackageBackend
     from moto.mediastore.models import MediaStoreBackend
     from moto.mediastoredata.models import MediaStoreDataBackend
+    from moto.memorydb.models import MemoryDBBackend
     from moto.meteringmarketplace.models import MeteringMarketplaceBackend
     from moto.moto_api._internal.models import MotoAPIBackend
     from moto.mq.models import MQBackend
@@ -99,6 +101,7 @@ if TYPE_CHECKING:
     from moto.opensearchserverless.models import OpenSearchServiceServerlessBackend
     from moto.opsworks.models import OpsWorksBackend
     from moto.organizations.models import OrganizationsBackend
+    from moto.osis.models import OpenSearchIngestionBackend
     from moto.personalize.models import PersonalizeBackend
     from moto.pinpoint.models import PinpointBackend
     from moto.polly.models import PollyBackend
@@ -140,11 +143,13 @@ if TYPE_CHECKING:
     from moto.support.models import SupportBackend
     from moto.swf.models import SWFBackend
     from moto.textract.models import TextractBackend
+    from moto.timestreamquery.models import TimestreamQueryBackend
     from moto.timestreamwrite.models import TimestreamWriteBackend
     from moto.transcribe.models import TranscribeBackend
     from moto.transfer.models import TransferBackend
     from moto.wafv2.models import WAFV2Backend
     from moto.workspaces.models import WorkSpacesBackend
+    from moto.workspacesweb.models import WorkSpacesWebBackend
     from moto.xray.models import XRayBackend
 
 
@@ -192,6 +197,7 @@ SERVICE_NAMES = Union[
     "Literal['apigatewayv2']",
     "Literal['appconfig']",
     "Literal['applicationautoscaling']",
+    "Literal['appmesh']",
     "Literal['appsync']",
     "Literal['athena']",
     "Literal['autoscaling']",
@@ -264,6 +270,7 @@ SERVICE_NAMES = Union[
     "Literal['medialive']",
     "Literal['mediapackage']",
     "Literal['mediastore']",
+    "Literal['memorydb']",
     "Literal['mediastore-data']",
     "Literal['meteringmarketplace']",
     "Literal['moto_api']",
@@ -274,6 +281,7 @@ SERVICE_NAMES = Union[
     "Literal['opensearchserverless']",
     "Literal['opsworks']",
     "Literal['organizations']",
+    "Literal['osis']",
     "Literal['personalize']",
     "Literal['pinpoint']",
     "Literal['polly']",
@@ -316,11 +324,13 @@ SERVICE_NAMES = Union[
     "Literal['support']",
     "Literal['swf']",
     "Literal['textract']",
+    "Literal['timestream-query']",
     "Literal['timestream-write']",
     "Literal['transcribe']",
     "Literal['transfer']",
     "Literal['wafv2']",
     "Literal['workspaces']",
+    "Literal['workspaces-web']",
     "Literal['xray']",
 ]
 
@@ -357,6 +367,8 @@ def get_backend(name: "Literal['appconfig']") -> "BackendDict[AppConfigBackend]"
 def get_backend(
     name: "Literal['applicationautoscaling']",
 ) -> "BackendDict[ApplicationAutoscalingBackend]": ...
+@overload
+def get_backend(name: "Literal['appmesh']") -> "BackendDict[AppMeshBackend]": ...
 @overload
 def get_backend(name: "Literal['appsync']") -> "BackendDict[AppSyncBackend]": ...
 @overload
@@ -556,6 +568,8 @@ def get_backend(
     name: "Literal['mediastore-data']",
 ) -> "BackendDict[MediaStoreDataBackend]": ...
 @overload
+def get_backend(name: "Literal['memorydb']") -> "BackendDict[MemoryDBBackend]": ...
+@overload
 def get_backend(
     name: "Literal['meteringmarketplace']",
 ) -> "BackendDict[MeteringMarketplaceBackend]": ...
@@ -579,6 +593,10 @@ def get_backend(
 ) -> "BackendDict[OpenSearchServiceServerlessBackend]": ...
 @overload
 def get_backend(name: "Literal['opsworks']") -> "BackendDict[OpsWorksBackend]": ...
+@overload
+def get_backend(
+    name: "Literal['osis']",
+) -> "BackendDict[OpenSearchIngestionBackend]": ...
 @overload
 def get_backend(
     name: "Literal['organizations']",
@@ -707,6 +725,10 @@ def get_backend(name: "Literal['swf']") -> "BackendDict[SWFBackend]": ...
 def get_backend(name: "Literal['textract']") -> "BackendDict[TextractBackend]": ...
 @overload
 def get_backend(
+    name: "Literal['timestream-query']",
+) -> "BackendDict[TimestreamQueryBackend]": ...
+@overload
+def get_backend(
     name: "Literal['timestream-write']",
 ) -> "BackendDict[TimestreamWriteBackend]": ...
 @overload
@@ -717,6 +739,10 @@ def get_backend(name: "Literal['transfer']") -> "BackendDict[TransferBackend]": 
 def get_backend(name: "Literal['wafv2']") -> "BackendDict[WAFV2Backend]": ...
 @overload
 def get_backend(name: "Literal['workspaces']") -> "BackendDict[WorkSpacesBackend]": ...
+@overload
+def get_backend(
+    name: "Literal['workspaces-web']",
+) -> "BackendDict[WorkSpacesWebBackend]": ...
 @overload
 def get_backend(name: "Literal['xray']") -> "BackendDict[XRayBackend]": ...
 
