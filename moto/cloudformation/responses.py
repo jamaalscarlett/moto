@@ -155,11 +155,17 @@ class CloudFormationResponse(BaseResponse):
         return False
 
     def validate_template_and_stack_body(self) -> None:
-        if self._get_param("TemplateBody") and self._get_param("UsePreviousTemplate").lower() == "true":
+        if (
+            self._get_param("TemplateBody") or self._get_param("TemplateURL")
+        ) and self._get_param("UsePreviousTemplate", "false").lower() == "true":
             raise ValidationError(
                 message="An error occurred (ValidationError) when calling the CreateChangeSet operation: You cannot specify both usePreviousTemplate and Template Body/Template URL."
             )
-        elif not self._get_param("TemplateBody") and self._get_param("UsePreviousTemplate").lower() == "false":
+        elif (
+            not self._get_param("TemplateBody")
+            and not self._get_param("TemplateURL")
+            and self._get_param("UsePreviousTemplate", "false").lower() == "false"
+        ):
             raise ValidationError(
                 message="An error occurred (ValidationError) when calling the CreateChangeSet operation: Either Template URL or Template Body must be specified."
             )
@@ -168,13 +174,17 @@ class CloudFormationResponse(BaseResponse):
         stack_name = self._get_param("StackName")
         change_set_name = self._get_param("ChangeSetName")
         stack_body = self._get_param("TemplateBody")
-        use_previous_template = self._get_param("UsePreviousTemplate").lower()
-        stack = self.cloudformation_backend.get_stack(stack_name)
-        self.validate_template()
-
-        if use_previous_template == "true":
-            stack_body = stack.template
         template_url = self._get_param("TemplateURL")
+        if self._get_param("ChangeSetType", "CREATE") == "UPDATE":
+            use_previous_template = self._get_param(
+                "UsePreviousTemplate", "false"
+            ).lower()
+            stack = self.cloudformation_backend.get_stack(stack_name)
+            self.validate_template_and_stack_body()
+            # self.validate_template()
+
+            if use_previous_template == "true":
+                stack_body = stack.template
         description = self._get_param("Description")
         role_arn = self._get_param("RoleARN")
         update_or_create = self._get_param("ChangeSetType", "CREATE")
@@ -186,7 +196,7 @@ class CloudFormationResponse(BaseResponse):
 
         parameters = {
             param["parameter_key"]: stack.parameters[param["parameter_key"]]
-            if param.get("use_previous_value", False)
+            if param.get("use_previous_value", False) and use_previous_template
             else param["parameter_value"]
             for param in parameters_list
         }
