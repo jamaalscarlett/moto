@@ -178,12 +178,12 @@ class CloudFormationResponse(BaseResponse):
         if self._get_param("ChangeSetType", "CREATE") == "UPDATE":
             use_previous_template = self._get_param(
                 "UsePreviousTemplate", "false"
-            ).lower()
+            ).lower() == "true"
             stack = self.cloudformation_backend.get_stack(stack_name)
             self.validate_template_and_stack_body()
             # self.validate_template()
 
-            if use_previous_template == "true":
+            if use_previous_template:
                 stack_body = stack.template
         description = self._get_param("Description")
         role_arn = self._get_param("RoleARN")
@@ -193,19 +193,20 @@ class CloudFormationResponse(BaseResponse):
             (item["key"], item["value"])
             for item in self._get_list_prefix("Tags.member")
         )
-
         parameters = {
             param["parameter_key"]: stack.parameters[param["parameter_key"]]
-            if param.get("use_previous_value", False) and use_previous_template
+            if param.get("use_previous_value", "").lower() == "true" and use_previous_template
             else param["parameter_value"]
             for param in parameters_list
         }
+        
         if update_or_create == "UPDATE":
             self._validate_different_update(parameters_list, stack_body, stack)
 
         if template_url:
             stack_body = self._get_stack_from_s3_url(template_url)
         stack_notification_arns = self._get_multi_param("NotificationARNs.member")
+
         change_set_id, stack_id = self.cloudformation_backend.create_change_set(
             stack_name=stack_name,
             change_set_name=change_set_name,

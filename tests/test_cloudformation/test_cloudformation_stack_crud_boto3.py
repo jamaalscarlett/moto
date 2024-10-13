@@ -2629,6 +2629,45 @@ def test_base64_function():
     waiter.wait(StackName=name)
 
 
+@mock_aws
+def test_create_change_set_w_previous_values():
+    cf = boto3.client("cloudformation", region_name=REGION_NAME)
+    cf.create_stack(
+        StackName="js-stack",
+        TemplateBody=json.dumps(dummy_template_with_parameters),
+        Parameters=[{"ParameterKey": "Name", "ParameterValue": "jsbucket-2"}, {"ParameterKey": "Another", "ParameterValue": "A"}],
+    )
+
+    cf.create_change_set(
+        StackName="js-stack",
+        UsePreviousTemplate=True,
+        # TemplateBody=json.dumps(dummy_template_with_parameters),
+        ChangeSetName="jschangeset",
+        ChangeSetType="UPDATE",
+        # Parameters=[{"ParameterKey": "Name", "ParameterValue": "foobar"}, {"ParameterKey": "Another", "UsePreviousValue": True}],
+        # Parameters=[{"ParameterKey": "Name", "ParameterValue": "foobar"}, {"ParameterKey": "Another", "UsePreviousValue": True}],
+        Parameters=[{"ParameterKey": "Name", "UsePreviousValue": True}, {"ParameterKey": "Another", "UsePreviousValue": True}],
+    )
+
+    stack = cf.describe_change_set(ChangeSetName="jschangeset")
+    assert stack["ChangeSetName"] == "jschangeset"
+    assert stack["StackName"] == "js-stack"
+
+    cf.execute_change_set(ChangeSetName="jschangeset")
+
+    stack = cf.describe_change_set(ChangeSetName="jschangeset")
+    assert stack["ChangeSetName"] == "jschangeset"
+    assert stack["StackName"] == "js-stack"
+    assert stack["ExecutionStatus"] == "EXECUTE_COMPLETE"
+
+    stacks = cf.describe_stacks(StackName="js-stack")["Stacks"]
+    assert len(stacks) == 1
+    stack = stacks[0]
+    assert [param["ParameterValue"] for param in stack["Parameters"]] == ["foobar", "A"]
+
+
+    
+
 def get_role_name():
     with mock_aws():
         iam = boto3.client("iam", region_name=REGION_NAME)
